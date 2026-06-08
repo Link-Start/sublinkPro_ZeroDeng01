@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sublink/api"
@@ -17,6 +20,7 @@ import (
 	"sublink/node/protocol"
 	"sublink/routers"
 	"sublink/services"
+	"sublink/services/cloudflared"
 	"sublink/services/geoip"
 	"sublink/services/mihomo"
 	"sublink/services/notifications"
@@ -25,6 +29,8 @@ import (
 	"sublink/services/telegram"
 	"sublink/settings"
 	"sublink/utils"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/metacubex/mihomo/constant"
@@ -203,7 +209,10 @@ func main() {
 			settingCmd.StringVar(&logLevel, "log-level", "", "日志等级 (debug/info/warn/error/fatal)")
 			settingCmd.StringVar(&configFile, "config", "", "配置文件名")
 			settingCmd.StringVar(&configFile, "c", "", "配置文件名 (简写)")
-			settingCmd.Parse(os.Args[2:])
+			if err := settingCmd.Parse(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 
 			// 初始化数据库目录和数据库
 			if err := initDatabase(dsn, dbPath, logPath, logLevel, configFile, port); err != nil {
@@ -226,7 +235,10 @@ func main() {
 			runCmd.StringVar(&logLevel, "log-level", "", "日志等级 (debug/info/warn/error/fatal)")
 			runCmd.StringVar(&configFile, "config", "", "配置文件名")
 			runCmd.StringVar(&configFile, "c", "", "配置文件名 (简写)")
-			runCmd.Parse(os.Args[2:])
+			if err := runCmd.Parse(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 
 			if err := initDatabase(dsn, dbPath, logPath, logLevel, configFile, port); err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -506,6 +518,9 @@ func Run() {
 		utils.Error("加载链式代理规则到缓存失败: %v", err)
 	}
 
+	// 根据页面保存的配置自动启动 Cloudflare Tunnel。
+	cloudflared.AutoStart()
+
 	// 注册Host变更回调：当Host模块数据变更时自动同步到mihomo resolver
 	// 这样所有使用代理的功能（测速、订阅导入、Telegram等）都遵循Host设置
 	models.RegisterHostChangeCallback(func() {
@@ -572,7 +587,7 @@ func Run() {
 			serveIndexHTML := func(c *gin.Context) {
 				data, err := fs.ReadFile(staticFiles, "index.html")
 				if err != nil {
-					c.Error(err)
+					_ = c.Error(err)
 					return
 				}
 				// 注入配置脚本到 HTML
@@ -714,6 +729,28 @@ func Run() {
 		}
 	})
 
+	server := &http.Server{
+		Addr:    fmt.Sprintf("0.0.0.0:%d", port),
+		Handler: r,
+	}
+	shutdownCtx, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignal()
+
+	go func() {
+		<-shutdownCtx.Done()
+		utils.Info("收到退出信号，正在停止后台服务")
+		if err := cloudflared.DefaultManager().Shutdown(); err != nil {
+			utils.Warn("停止 cloudflared 失败: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			utils.Warn("HTTP 服务关闭失败: %v", err)
+		}
+	}()
+
 	// 启动服务
-	r.Run(fmt.Sprintf("0.0.0.0:%d", port))
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		utils.Fatal("服务启动失败: %v", err)
+	}
 }

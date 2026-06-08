@@ -1,7 +1,8 @@
 import PropTypes from 'prop-types';
+import { useTranslation } from 'react-i18next';
 
 // material-ui
-import { useTheme } from '@mui/material/styles';
+import { alpha, useTheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
@@ -12,6 +13,7 @@ import useResolvedColorScheme from 'hooks/useResolvedColorScheme';
 
 // project imports
 import MainCard from 'ui-component/cards/MainCard';
+import NodeProtocolChip from './NodeProtocolChip';
 
 // utils
 import {
@@ -30,11 +32,15 @@ import { getNodePanelSx, getNodeTagChipSx, getNodeThemeTokens } from '../nodeThe
  * 移动端节点卡片组件（精简版）
  * 只显示核心信息，点击卡片打开详情面板
  */
-export default function NodeCard({ node, isSelected, tagColorMap, onSelect, onViewDetails }) {
+export default function NodeCard({ node, isSelected, tagColorMap, protocolMeta, onSelect, onViewDetails }) {
+  const { t } = useTranslation();
   const theme = useTheme();
   const { isDark } = useResolvedColorScheme();
   const tokens = getNodeThemeTokens(theme, isDark);
   const unlockDisplay = getNodeUnlockSummaryDisplay(node, { limit: 2 });
+  const effectiveName = node.EffectiveName || node.Name || node.LinkName;
+  const secondaryName = node.NameMode === 'remark' ? node.LinkName : node.Name;
+  const showSecondaryName = secondaryName && secondaryName !== effectiveName;
 
   return (
     <MainCard
@@ -46,6 +52,8 @@ export default function NodeCard({ node, isSelected, tagColorMap, onSelect, onVi
           interactive: true,
           selected: isSelected
         }),
+        backgroundImage: 'none',
+        bgcolor: isSelected ? alpha(theme.palette.primary.main, isDark ? 0.14 : 0.06) : tokens.cardSurface,
         cursor: 'pointer'
       }}
       onClick={(e) => {
@@ -58,7 +66,7 @@ export default function NodeCard({ node, isSelected, tagColorMap, onSelect, onVi
         <Box sx={{ position: 'relative', mb: 1.5, pr: 10 }}>
           <Box sx={{ position: 'absolute', top: 0, right: 0 }}>
             <Chip
-              label={node.LinkCountry ? formatCountry(node.LinkCountry) : '🏳️ 未知'}
+              label={node.LinkCountry ? formatCountry(node.LinkCountry) : t('nodes.mobile.unknownCountry')}
               color={node.LinkCountry ? 'secondary' : 'default'}
               variant="outlined"
               size="small"
@@ -73,28 +81,38 @@ export default function NodeCard({ node, isSelected, tagColorMap, onSelect, onVi
               }}
               sx={{ p: 0.5, flexShrink: 0 }}
             />
-            <Tooltip title={node.Name} placement="top">
-              <Typography
-                variant="subtitle1"
-                fontWeight="bold"
-                sx={{
-                  flex: 1,
-                  minWidth: 0,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  pr: 1
-                }}
-              >
-                {node.Name}
-              </Typography>
+            <Tooltip title={effectiveName} placement="top">
+              <Box sx={{ flex: 1, minWidth: 0, pr: 1 }}>
+                <Typography
+                  variant="subtitle1"
+                  fontWeight="bold"
+                  sx={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {effectiveName}
+                </Typography>
+                {showSecondaryName && (
+                  <Typography
+                    variant="caption"
+                    sx={{ color: tokens.secondaryText, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                  >
+                    {node.NameMode === 'remark'
+                      ? t('nodes.mobile.originalName', { name: secondaryName })
+                      : t('nodes.mobile.remarkName', { name: secondaryName })}
+                  </Typography>
+                )}
+              </Box>
             </Tooltip>
           </Stack>
         </Box>
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+          <NodeProtocolChip link={node.Link} protocolMeta={protocolMeta} maxWidth={104} />
           {node.Group && (
-            <Tooltip title={`分组: ${node.Group}`}>
+            <Tooltip title={t('nodes.mobile.groupTooltip', { group: node.Group })}>
               <Chip
                 icon={<span style={{ fontSize: '12px', marginLeft: '8px' }}>📁</span>}
                 label={node.Group}
@@ -106,7 +124,7 @@ export default function NodeCard({ node, isSelected, tagColorMap, onSelect, onVi
             </Tooltip>
           )}
           {node.Source && node.Source !== 'manual' && (
-            <Tooltip title={`来源: ${node.Source}`}>
+            <Tooltip title={t('nodes.mobile.sourceTooltip', { source: node.Source })}>
               <Chip
                 icon={<span style={{ fontSize: '12px', marginLeft: '8px' }}>📥</span>}
                 label={node.Source}
@@ -153,14 +171,14 @@ export default function NodeCard({ node, isSelected, tagColorMap, onSelect, onVi
             const fraudScoreDisplay = getFraudScoreDisplay(node.FraudScore, node.QualityStatus, node.QualityFamily);
             const qualityStatusDisplay = getQualityStatusDisplay(node.QualityStatus, node.QualityFamily);
             const isUntested =
-              ipTypeDisplay.label === '未检测' && residentialDisplay.label === '未检测' && fraudScoreDisplay.label === '未检测';
+              ipTypeDisplay.state === 'untested' && residentialDisplay.state === 'untested' && fraudScoreDisplay.state === 'untested';
             const shouldMergeQualityTags =
               node.QualityStatus !== 'success' &&
               ipTypeDisplay.label === residentialDisplay.label &&
               residentialDisplay.label === fraudScoreDisplay.label;
 
             if (isUntested) {
-              return <Chip label="未检测" color="default" variant="outlined" size="small" />;
+              return <Chip label={t('nodeConditions.qualityStatus.untested')} color="default" variant="outlined" size="small" />;
             }
 
             if (shouldMergeQualityTags) {
@@ -183,7 +201,11 @@ export default function NodeCard({ node, isSelected, tagColorMap, onSelect, onVi
             );
             const fraudChip = (
               <Chip
-                label={node.QualityStatus === 'success' ? `评分 ${fraudScoreDisplay.label}` : fraudScoreDisplay.label}
+                label={
+                  node.QualityStatus === 'success'
+                    ? t('nodes.mobile.fraudScoreLabel', { score: fraudScoreDisplay.label })
+                    : fraudScoreDisplay.label
+                }
                 color={fraudScoreDisplay.color}
                 variant={fraudScoreDisplay.variant}
                 size="small"
@@ -292,6 +314,7 @@ NodeCard.propTypes = {
   }).isRequired,
   isSelected: PropTypes.bool.isRequired,
   tagColorMap: PropTypes.object,
+  protocolMeta: PropTypes.array,
   onSelect: PropTypes.func.isRequired,
   onViewDetails: PropTypes.func.isRequired
 };

@@ -32,13 +32,13 @@ type ValidationResult struct {
 }
 
 type GenerateResponse struct {
-	Summary       string                 `json:"summary"`
-	Warnings      []string               `json:"warnings"`
-	CandidateText string                 `json:"candidateText"`
-	RevisionHash  string                 `json:"revisionHash"`
-	Validation    ValidationResult       `json:"validation"`
-	FinishReason  string                 `json:"finishReason,omitempty"`
-	Usage         map[string]interface{} `json:"usage,omitempty"`
+	Summary       string           `json:"summary"`
+	Warnings      []string         `json:"warnings"`
+	CandidateText string           `json:"candidateText"`
+	RevisionHash  string           `json:"revisionHash"`
+	Validation    ValidationResult `json:"validation"`
+	FinishReason  string           `json:"finishReason,omitempty"`
+	Usage         map[string]any   `json:"usage,omitempty"`
 }
 
 type AssistantModelOutput struct {
@@ -66,7 +66,7 @@ Important repository-specific rules:
 - Do not convert clash syntax to surge or surge syntax to clash.
 - If the request is unsafe or ambiguous, keep candidateText equal to the original template and explain in warnings.
 Return JSON with keys: summary, warnings, candidateText.`)
-	userPayload := map[string]interface{}{
+	userPayload := map[string]any{
 		"filename":         req.Filename,
 		"category":         req.Category,
 		"ruleSource":       req.RuleSource,
@@ -90,7 +90,7 @@ func GenerateCandidateStream(ctx context.Context, user *models.User, req Generat
 		return nil, err
 	}
 	if !settings.Enabled {
-		return nil, fmt.Errorf("当前用户未启用 AI 助手")
+		return nil, fmt.Errorf("AI 助手未启用")
 	}
 	if settings.BaseURL == "" || settings.Model == "" || settings.RawAPIKey == "" {
 		return nil, fmt.Errorf("AI 设置不完整，请先配置 Base URL、模型和 API Key")

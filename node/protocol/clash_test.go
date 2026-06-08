@@ -9,6 +9,46 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestProxyBandwidthYAMLUnmarshal(t *testing.T) {
+	tests := []struct {
+		name     string
+		yamlDoc  string
+		wantUp   int
+		wantDown int
+		wantErr  string
+	}{
+		{name: "integer", yamlDoc: "up: 30\n", wantUp: 30},
+		{name: "bare string", yamlDoc: "up: \"30\"\n", wantUp: 30},
+		{name: "provider bare string pair", yamlDoc: "up: \"500\"\ndown: \"1000\"\n", wantUp: 500, wantDown: 1000},
+		{name: "mbps string", yamlDoc: "up: \"30 Mbps\"\n", wantUp: 30},
+		{name: "invalid suffix", yamlDoc: "up: \"30 bananas\"\n", wantErr: "无法解析带宽值"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var proxy Proxy
+			err := yaml.Unmarshal([]byte(tt.yamlDoc), &proxy)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("yaml.Unmarshal error = %v, want contains %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("yaml.Unmarshal failed: %v", err)
+			}
+			if got := int(proxy.Up); got != tt.wantUp {
+				t.Fatalf("proxy.Up = %d, want %d", got, tt.wantUp)
+			}
+			if tt.wantDown != 0 {
+				if got := int(proxy.Down); got != tt.wantDown {
+					t.Fatalf("proxy.Down = %d, want %d", got, tt.wantDown)
+				}
+			}
+		})
+	}
+}
+
 // TestLinkToProxy_SS 测试 SS 链接转换为 Proxy 结构体
 func TestLinkToProxy_SS(t *testing.T) {
 	link := Urls{
@@ -103,7 +143,7 @@ func TestLinkToProxy_VLESSXHTTP(t *testing.T) {
 		Port:   443,
 		Query: VLESSQuery{
 			Security:   "tls",
-			Encryption: "none",
+			Encryption: "mlkem768x25519plus.native.0rtt.test-key",
 			Type:       "xhttp",
 			Host:       "cdn.example.com",
 			Path:       "/xhttp",
@@ -123,16 +163,120 @@ func TestLinkToProxy_VLESSXHTTP(t *testing.T) {
 
 	assertEqualString(t, "Type", "vless", proxy.Type)
 	assertEqualString(t, "Network", "xhttp", proxy.Network)
+	assertEqualString(t, "Encryption", vless.Query.Encryption, proxy.Encryption)
 	assertEqualString(t, "Server", "example.com", proxy.Server)
 	assertEqualFlexPort(t, "Port", 443, proxy.Port)
 	assertEqualString(t, "Uuid", vless.Uuid, proxy.Uuid)
-	assertEqualString(t, "XHTTPPath", "/xhttp", proxy.XHTTP_opts["path"].(string))
-	assertEqualString(t, "XHTTPHost", "cdn.example.com", proxy.XHTTP_opts["host"].(string))
-	assertEqualString(t, "XHTTPMode", "stream-up", proxy.XHTTP_opts["mode"].(string))
-	assertEqualString(t, "XHTTPHeader", "curl/8.0", proxy.XHTTP_opts["headers"].(map[string]interface{})["User-Agent"].(string))
-	assertEqualString(t, "XHTTPDownloadPath", "/download", proxy.XHTTP_opts["download-settings"].(map[string]interface{})["path"].(string))
+	assertEqualString(t, "XHTTPPath", "/xhttp", mustString(t, "XHTTPPath", proxy.XHTTP_opts["path"]))
+	assertEqualString(t, "XHTTPHost", "cdn.example.com", mustString(t, "XHTTPHost", proxy.XHTTP_opts["host"]))
+	assertEqualString(t, "XHTTPMode", "stream-up", mustString(t, "XHTTPMode", proxy.XHTTP_opts["mode"]))
+	headers := mustMap(t, "XHTTPHeader headers", proxy.XHTTP_opts["headers"])
+	assertEqualString(t, "XHTTPHeader", "curl/8.0", mustString(t, "XHTTPHeader User-Agent", headers["User-Agent"]))
+	downloadSettings := mustMap(t, "XHTTPDownloadPath download-settings", proxy.XHTTP_opts["download-settings"])
+	assertEqualString(t, "XHTTPDownloadPath", "/download", mustString(t, "XHTTPDownloadPath path", downloadSettings["path"]))
+
+	data, err := yaml.Marshal(proxy)
+	if err != nil {
+		t.Fatalf("YAML 编码失败: %v", err)
+	}
+	if !strings.Contains(string(data), "encryption: "+vless.Query.Encryption) {
+		t.Fatalf("VLESS encryption 应出现在 YAML 输出中: %s", string(data))
+	}
 
 	t.Logf("✓ VLESS XHTTP LinkToProxy 测试通过，名称: %s", proxy.Name)
+}
+
+func TestLinkToProxy_VLESSPreservesTopLevelECH(t *testing.T) {
+	vless := VLESS{
+		Name:   "测试节点-VLESS-ECH",
+		Uuid:   "12345678-1234-1234-1234-123456789abc",
+		Server: "example.com",
+		Port:   443,
+		Query: VLESSQuery{
+			Security: "tls",
+			Type:     "ws",
+			Path:     "/vless",
+			Ech:      "BASE64_ECH_CONFIG",
+		},
+	}
+
+	proxy, err := LinkToProxy(Urls{Url: EncodeVLESSURL(vless)}, OutputConfig{})
+	if err != nil {
+		t.Fatalf("LinkToProxy 失败: %v", err)
+	}
+
+	assertEqualBool(t, "ECHEnable", true, mustBool(t, "ECHEnable", proxy.ECH_opts["enable"]))
+	assertEqualString(t, "ECHConfig", vless.Query.Ech, mustString(t, "ECHConfig", proxy.ECH_opts["config"]))
+	if len(proxy.XHTTP_opts) != 0 {
+		t.Fatalf("顶层 ECH 不应被静默写入 xhttp-opts, 实际: %#v", proxy.XHTTP_opts)
+	}
+}
+
+func TestLinkToProxy_VLESSDNSStyleECHUsesBestEffortECHOpts(t *testing.T) {
+	vless := VLESS{
+		Name:   "测试节点-VLESS-ECH-DNS",
+		Uuid:   "12345678-1234-1234-1234-123456789abc",
+		Server: "example.com",
+		Port:   443,
+		Query: VLESSQuery{
+			Security: "tls",
+			Type:     "ws",
+			Path:     "/vless",
+			Ech:      "encryptedsni.com+https://dns.alidns.com/dns-query",
+		},
+	}
+
+	proxy, err := LinkToProxy(Urls{Url: EncodeVLESSURL(vless)}, OutputConfig{})
+	if err != nil {
+		t.Fatalf("LinkToProxy 失败: %v", err)
+	}
+
+	assertEqualBool(t, "ECHEnable", true, mustBool(t, "ECHEnable", proxy.ECH_opts["enable"]))
+	assertEqualString(t, "ECHQueryServerName", "encryptedsni.com", mustString(t, "ECHQueryServerName", proxy.ECH_opts["query-server-name"]))
+	if _, exists := proxy.ECH_opts["config"]; exists {
+		t.Fatalf("DNS 风格 ech 不应被错误写入 config: %#v", proxy.ECH_opts)
+	}
+}
+
+func TestProxyYAMLMapsTopLevelECHToECHOpts(t *testing.T) {
+	proxy := Proxy{
+		Name:       "测试节点-VLESS-ECH-YAML",
+		Type:       "vless",
+		Server:     "example.com",
+		Port:       443,
+		Uuid:       "12345678-1234-1234-1234-123456789abc",
+		Network:    "xhttp",
+		Tls:        true,
+		Servername: "example.com",
+		ECH_opts: map[string]any{
+			"enable": true,
+			"config": "BASE64_ECH_CONFIG",
+		},
+		XHTTP_opts: map[string]any{
+			"download-settings": map[string]any{
+				"ech-opts": map[string]any{
+					"config":            "base64-ech",
+					"query-server-name": "dns.example.com",
+				},
+			},
+		},
+	}
+
+	data, err := yaml.Marshal(proxy)
+	if err != nil {
+		t.Fatalf("YAML 编码失败: %v", err)
+	}
+
+	encoded := string(data)
+	if !strings.Contains(encoded, "ech-opts") {
+		t.Fatalf("顶层 ECH 应映射为 ech-opts: %s", encoded)
+	}
+	if !strings.Contains(encoded, "config: BASE64_ECH_CONFIG") {
+		t.Fatalf("顶层 ECH config 应出现在 YAML 输出中: %s", encoded)
+	}
+	if !strings.Contains(encoded, "query-server-name") {
+		t.Fatalf("ech-opts 子字段应保留在 YAML 输出中: %s", encoded)
+	}
 }
 
 // TestLinkToProxy_Trojan 测试 Trojan 链接转换为 Proxy 结构体
@@ -547,17 +691,17 @@ proxy-groups:
 	output := string(data)
 	assertContains(t, "provider组use字段", output, "Airport-A")
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		t.Fatalf("解析输出 YAML 失败: %v", err)
 	}
 
-	rawGroups, ok := config["proxy-groups"].([]interface{})
+	rawGroups, ok := config["proxy-groups"].([]any)
 	if !ok || len(rawGroups) != 2 {
 		t.Fatalf("proxy-groups 解析失败: %#v", config["proxy-groups"])
 	}
 
-	firstGroup, ok := rawGroups[0].(map[string]interface{})
+	firstGroup, ok := rawGroups[0].(map[string]any)
 	if !ok {
 		t.Fatalf("第一个代理组类型错误: %#v", rawGroups[0])
 	}
@@ -567,11 +711,11 @@ proxy-groups:
 	if _, exists := firstGroup["proxies"]; exists {
 		t.Fatalf("use 组不应被强行注入 proxies: %#v", firstGroup)
 	}
-	if use, ok := firstGroup["use"].([]interface{}); !ok || len(use) != 2 {
+	if use, ok := firstGroup["use"].([]any); !ok || len(use) != 2 {
 		t.Fatalf("use 组 providers 丢失: %#v", firstGroup["use"])
 	}
 
-	secondGroup, ok := rawGroups[1].(map[string]interface{})
+	secondGroup, ok := rawGroups[1].(map[string]any)
 	if !ok {
 		t.Fatalf("第二个代理组类型错误: %#v", rawGroups[1])
 	}
@@ -630,17 +774,17 @@ proxy-groups:
 		t.Fatalf("EncodeClash 失败: %v", err)
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		t.Fatalf("解析输出 YAML 失败: %v", err)
 	}
 
-	rawGroups, ok := config["proxy-groups"].([]interface{})
+	rawGroups, ok := config["proxy-groups"].([]any)
 	if !ok || len(rawGroups) != 3 {
 		t.Fatalf("proxy-groups 解析失败: %#v", config["proxy-groups"])
 	}
 
-	firstGroup, ok := rawGroups[0].(map[string]interface{})
+	firstGroup, ok := rawGroups[0].(map[string]any)
 	if !ok {
 		t.Fatalf("第一个代理组类型错误: %#v", rawGroups[0])
 	}
@@ -651,7 +795,7 @@ proxy-groups:
 		t.Fatalf("include-all-proxies 丢失: %#v", firstGroup["include-all-proxies"])
 	}
 
-	secondGroup, ok := rawGroups[1].(map[string]interface{})
+	secondGroup, ok := rawGroups[1].(map[string]any)
 	if !ok {
 		t.Fatalf("第二个代理组类型错误: %#v", rawGroups[1])
 	}
@@ -662,7 +806,7 @@ proxy-groups:
 		t.Fatalf("load-balance 组 include-all-proxies 丢失: %#v", secondGroup["include-all-proxies"])
 	}
 
-	thirdGroup, ok := rawGroups[2].(map[string]interface{})
+	thirdGroup, ok := rawGroups[2].(map[string]any)
 	if !ok {
 		t.Fatalf("第三个代理组类型错误: %#v", rawGroups[2])
 	}

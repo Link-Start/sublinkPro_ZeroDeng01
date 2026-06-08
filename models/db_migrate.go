@@ -22,6 +22,53 @@ func md5Hash(src string) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
+func legacyUserAISettingsShouldMigrate() bool {
+	enabled, _ := GetSetting(systemAIEnabledKey)
+	baseURL, _ := GetSetting(systemAIBaseURLKey)
+	model, _ := GetSetting(systemAIModelKey)
+	apiKey, _ := GetSetting(systemAIAPIKeyKey)
+
+	return strings.TrimSpace(enabled) == "" &&
+		strings.TrimSpace(baseURL) == "" &&
+		strings.TrimSpace(model) == "" &&
+		strings.TrimSpace(apiKey) == ""
+}
+
+func migrateLegacyUserAISettingsToSystemSettings() error {
+	if database.DB == nil || !legacyUserAISettingsShouldMigrate() {
+		return nil
+	}
+
+	var user User
+	if err := database.DB.Where("ai_enabled = ? OR ai_base_url <> '' OR ai_model <> '' OR ai_api_key_encrypted <> ''", true).
+		Order("ai_enabled DESC, id ASC").
+		First(&user).Error; err != nil {
+		return nil
+	}
+	if err := SetSetting(systemAIEnabledKey, strconv.FormatBool(user.AIEnabled)); err != nil {
+		return err
+	}
+	if err := SetSetting(systemAIBaseURLKey, strings.TrimSpace(user.AIBaseURL)); err != nil {
+		return err
+	}
+	if err := SetSetting(systemAIModelKey, strings.TrimSpace(user.AIModel)); err != nil {
+		return err
+	}
+	if err := SetSetting(systemAIAPIKeyKey, strings.TrimSpace(user.AIAPIKeyEncrypted)); err != nil {
+		return err
+	}
+	if err := SetSetting(systemAITemperatureKey, strconv.FormatFloat(user.AITemperature, 'f', -1, 64)); err != nil {
+		return err
+	}
+	if err := SetSetting(systemAIMaxTokensKey, strconv.Itoa(user.AIMaxTokens)); err != nil {
+		return err
+	}
+	if err := SetSetting(systemAIExtraHeadersKey, strings.TrimSpace(user.AIExtraHeaders)); err != nil {
+		return err
+	}
+	return nil
+}
+
 // RunMigrations 执行所有数据库迁移
 // 此函数必须在 database.Init() 之后调用
 func RunMigrations() error {
@@ -38,7 +85,7 @@ func RunMigrations() error {
 
 	baseTables := []struct {
 		name  string
-		model interface{}
+		model any
 	}{
 		{name: "User", model: &User{}},
 		{name: "MFALoginChallenge", model: &MFALoginChallenge{}},
@@ -98,7 +145,7 @@ func RunMigrations() error {
 			}
 		}
 
-		if err := db.Model(&Node{}).Where("quality_status IS NULL OR quality_status = ''").Updates(map[string]interface{}{
+		if err := db.Model(&Node{}).Where("quality_status IS NULL OR quality_status = ''").Updates(map[string]any{
 			"quality_status": gorm.Expr("CASE WHEN fraud_score >= 0 THEN 'success' ELSE 'untested' END"),
 			"quality_family": gorm.Expr("CASE WHEN landing_ip LIKE '%:%' THEN 'ipv6' WHEN landing_ip IS NOT NULL AND landing_ip != '' THEN 'ipv4' ELSE '' END"),
 		}).Error; err != nil {
@@ -115,6 +162,12 @@ func RunMigrations() error {
 		utils.Error("执行迁移 0029_add_user_ai_settings_columns 失败: %v", err)
 	}
 
+	if err := database.RunCustomMigration("0031_migrate_user_ai_settings_to_system_settings", func() error {
+		return migrateLegacyUserAISettingsToSystemSettings()
+	}); err != nil {
+		utils.Error("执行迁移 0031_migrate_user_ai_settings_to_system_settings 失败: %v", err)
+	}
+
 	if err := database.RunCustomMigration("0030_add_unlock_check_columns", func() error {
 		if err := db.AutoMigrate(&Node{}, &NodeCheckProfile{}); err != nil {
 			return err
@@ -128,6 +181,56 @@ func RunMigrations() error {
 		return nil
 	}); err != nil {
 		utils.Error("执行迁移 0030_add_unlock_check_columns 失败: %v", err)
+	}
+
+	if err := database.RunCustomMigration("0032_backfill_node_name_mode", func() error {
+		if !db.Migrator().HasColumn(&Node{}, "NameMode") {
+			if err := db.Migrator().AddColumn(&Node{}, "NameMode"); err != nil {
+				return err
+			}
+		}
+
+		result := db.Model(&Node{}).Where("1 = 1").Update("name_mode", gorm.Expr(
+			"CASE WHEN TRIM(COALESCE(name, '')) <> '' AND TRIM(COALESCE(link_name, '')) <> '' AND TRIM(name) <> TRIM(link_name) THEN ? ELSE ? END",
+			NodeNameModeRemark,
+			NodeNameModeLink,
+		))
+		if result.Error != nil {
+			return result.Error
+		}
+		utils.Info("已回填 %d 个节点的名称模式", result.RowsAffected)
+		return nil
+	}); err != nil {
+		utils.Error("执行迁移 0032_backfill_node_name_mode 失败: %v", err)
+	}
+
+	if err := database.RunCustomMigration("0033_make_node_names_unique", func() error {
+		var nodes []Node
+		if err := db.Order("id ASC").Find(&nodes).Error; err != nil {
+			return err
+		}
+		reservedNames := make(map[string]bool, len(nodes))
+		updatedCount := 0
+		for _, node := range nodes {
+			currentName := strings.TrimSpace(node.Name)
+			if currentName == "" {
+				currentName = strings.TrimSpace(node.LinkName)
+			}
+			uniqueName := GenerateUniqueNodeNameWithSource(currentName, node.Source, node.ID, reservedNames)
+			if uniqueName == node.Name {
+				continue
+			}
+			if err := db.Model(&Node{}).Where("id = ?", node.ID).Update("name", uniqueName).Error; err != nil {
+				return err
+			}
+			updatedCount++
+		}
+		if updatedCount > 0 {
+			utils.Info("已为 %d 个重复节点备注追加编号", updatedCount)
+		}
+		return nil
+	}); err != nil {
+		utils.Error("执行迁移 0033_make_node_names_unique 失败: %v", err)
 	}
 
 	if err := database.RunCustomMigration("0024_migrate_legacy_webhook_settings", func() error {

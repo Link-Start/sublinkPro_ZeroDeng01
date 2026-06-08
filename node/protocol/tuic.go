@@ -37,7 +37,7 @@ type Tuic struct {
 	Name               string
 	Password           string //v5
 	Host               string
-	Port               interface{}
+	Port               any
 	Uuid               string //v5
 	Congestion_control string
 	Token              string //v4
@@ -141,7 +141,7 @@ func DecodeTuicURL(s string) (Tuic, error) {
 func EncodeTuicURL(t Tuic) string {
 	u := url.URL{
 		Scheme:   "tuic",
-		Host:     fmt.Sprintf("%s:%s", t.Host, utils.GetPortString(t.Port)),
+		Host:     formatURLHostPort(t.Host, utils.GetPortString(t.Port)),
 		Fragment: t.Name,
 	}
 	// 设置用户信息：uuid:password

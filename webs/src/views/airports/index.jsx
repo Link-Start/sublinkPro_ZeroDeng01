@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 // material-ui
@@ -47,6 +48,7 @@ import {
   pullAllAirports,
   refreshAirportUsage
 } from 'api/airports';
+import { getNodeCheckProfiles } from 'api/nodeCheck';
 import { useTaskProgress } from 'contexts/TaskProgressContext';
 import { getNodeGroups, getNodeIds, getNodes, getProtocolUIMeta } from 'api/nodes';
 import ProfileSelectDialog from 'views/nodes/component/ProfileSelectDialog';
@@ -69,7 +71,100 @@ import { validateCronExpression } from './utils';
 
 // ==============================|| 机场管理 ||============================== //
 
+const createEmptyRequestHeader = () => ({ key: '', value: '' });
+
+const normalizeRequestHeadersForForm = (requestHeaders) => {
+  if (!Array.isArray(requestHeaders)) {
+    return [];
+  }
+
+  return requestHeaders
+    .map((header) => ({
+      key: typeof header?.key === 'string' ? header.key : `${header?.key ?? ''}`,
+      value: typeof header?.value === 'string' ? header.value : `${header?.value ?? ''}`
+    }))
+    .filter((header) => header.key.trim() || header.value.trim());
+};
+
+const getRequestHeaderValidationMessage = (requestHeader, t) => {
+  const key = `${requestHeader?.key ?? ''}`.trim();
+  const value = `${requestHeader?.value ?? ''}`.trim();
+
+  if (!key && !value) {
+    return '';
+  }
+
+  if (!key && value) {
+    return t('airports.form.requestHeaders.errors.missingKey');
+  }
+
+  if (key.toLowerCase() === 'user-agent') {
+    return t('airports.form.requestHeaders.errors.userAgentDedicated');
+  }
+
+  return '';
+};
+
+const normalizeRequestHeadersForSubmit = (requestHeaders, t) => {
+  const normalizedHeaders = Array.isArray(requestHeaders)
+    ? requestHeaders
+        .map((header) => ({
+          key: `${header?.key ?? ''}`.trim(),
+          value: `${header?.value ?? ''}`.trim()
+        }))
+        .filter((header) => header.key || header.value)
+    : [];
+
+  const invalidHeaderIndex = normalizedHeaders.findIndex((header) => getRequestHeaderValidationMessage(header, t));
+
+  if (invalidHeaderIndex !== -1) {
+    return {
+      requestHeaders: normalizedHeaders,
+      error: t('airports.page.messages.invalidRequestHeaderRow', {
+        row: invalidHeaderIndex + 1,
+        message: getRequestHeaderValidationMessage(normalizedHeaders[invalidHeaderIndex], t)
+      })
+    };
+  }
+
+  return {
+    requestHeaders: normalizedHeaders,
+    error: ''
+  };
+};
+
+const createAirportFormState = (overrides = {}) => ({
+  id: 0,
+  name: '',
+  url: '',
+  cronExpr: '0 */12 * * *',
+  enabled: true,
+  group: '',
+  downloadWithProxy: false,
+  proxyLink: '',
+  userAgent: '',
+  requestHeaders: [],
+  fetchUsageInfo: false,
+  skipTLSVerify: false,
+  updateAfterDetect: false,
+  updateAfterDetectProfileId: 0,
+  updateAfterDetectChangedOnly: false,
+  remark: '',
+  logo: '',
+  nodeNameWhitelist: '',
+  nodeNameBlacklist: '',
+  protocolWhitelist: '',
+  protocolBlacklist: '',
+  nodeNamePreprocess: '',
+  deduplicationRule: '',
+  nodeNameUniquify: false,
+  nodeNamePrefix: '',
+  nodeNameIntraUniquify: false,
+  ...overrides
+});
+
 export default function AirportList() {
+  const { t } = useTranslation();
   const theme = useTheme();
   const palette = theme.vars?.palette || theme.palette;
   const { isDark } = useResolvedColorScheme();
@@ -95,7 +190,7 @@ export default function AirportList() {
       if (normalizeStr(before[key]) !== normalizeStr(after[key])) return true;
     }
 
-    const boolKeys = ['nodeNameUniquify'];
+    const boolKeys = ['nodeNameUniquify', 'nodeNameIntraUniquify'];
     for (const key of boolKeys) {
       if (!!before[key] !== !!after[key]) return true;
     }
@@ -136,29 +231,7 @@ export default function AirportList() {
   // 表单状态
   const [formOpen, setFormOpen] = useState(false);
   const [isEdit, setIsEdit] = useState(false);
-  const [airportForm, setAirportForm] = useState({
-    id: 0,
-    name: '',
-    url: '',
-    cronExpr: '0 */12 * * *',
-    enabled: true,
-    group: '',
-    downloadWithProxy: false,
-    proxyLink: '',
-    userAgent: '',
-    fetchUsageInfo: false,
-    skipTLSVerify: false,
-    remark: '',
-    logo: '',
-    nodeNameWhitelist: '',
-    nodeNameBlacklist: '',
-    protocolWhitelist: '',
-    protocolBlacklist: '',
-    nodeNamePreprocess: '',
-    deduplicationRule: '',
-    nodeNameUniquify: false,
-    nodeNamePrefix: ''
-  });
+  const [airportForm, setAirportForm] = useState(() => createAirportFormState());
   const [airportFormSnapshot, setAirportFormSnapshot] = useState(null);
 
   // 搜索筛选状态
@@ -180,6 +253,7 @@ export default function AirportList() {
   const [proxyNodeOptions, setProxyNodeOptions] = useState([]);
   const [loadingProxyNodes, setLoadingProxyNodes] = useState(false);
   const [protocolOptions, setProtocolOptions] = useState([]);
+  const [nodeCheckProfiles, setNodeCheckProfiles] = useState([]);
 
   const [profileSelectOpen, setProfileSelectOpen] = useState(false);
   const [profileSelectNodeIds, setProfileSelectNodeIds] = useState([]);
@@ -224,11 +298,11 @@ export default function AirportList() {
       }
     } catch (error) {
       console.error('获取机场列表失败:', error);
-      showMessage(error.message || '获取机场列表失败', 'error');
+      showMessage(error.message || t('airports.page.messages.loadFailed'), 'error');
     } finally {
       setLoading(false);
     }
-  }, [buildAirportQueryParams, showMessage]);
+  }, [buildAirportQueryParams, showMessage, t]);
 
   // 获取分组选项
   const fetchGroupOptions = useCallback(async () => {
@@ -263,12 +337,23 @@ export default function AirportList() {
     }
   }, []);
 
+  // 获取节点检测策略
+  const fetchNodeCheckProfiles = useCallback(async () => {
+    try {
+      const response = await getNodeCheckProfiles();
+      setNodeCheckProfiles(response.data || []);
+    } catch (error) {
+      console.error('获取节点检测策略失败:', error);
+    }
+  }, []);
+
   // 初始化
   useEffect(() => {
     fetchAirports();
     fetchGroupOptions();
     fetchProtocolOptions();
-  }, [fetchAirports, fetchGroupOptions, fetchProtocolOptions]);
+    fetchNodeCheckProfiles();
+  }, [fetchAirports, fetchGroupOptions, fetchNodeCheckProfiles, fetchProtocolOptions]);
 
   // 筛选条件变化时清空选择，避免对隐藏项误做批量操作
   useEffect(() => {
@@ -327,7 +412,7 @@ export default function AirportList() {
   // 选择当前筛选结果中的全部机场
   const handleSelectFilteredAirports = async () => {
     if (totalItems === 0) {
-      showMessage('当前筛选结果中没有机场', 'warning');
+      showMessage(t('airports.page.messages.noFilteredAirports'), 'warning');
       return;
     }
 
@@ -337,10 +422,10 @@ export default function AirportList() {
       const items = response.data?.items || (Array.isArray(response.data) ? response.data : []);
       const ids = items.map((airport) => airport.id);
       setSelectedAirportIds(ids);
-      showMessage(`已选择当前筛选结果中的 ${ids.length} 个机场`);
+      showMessage(t('airports.page.messages.selectedFiltered', { count: ids.length }));
     } catch (error) {
       console.error('选择筛选结果失败:', error);
-      showMessage(error.message || '选择筛选结果失败', 'error');
+      showMessage(error.message || t('airports.page.messages.selectFilteredFailed'), 'error');
     } finally {
       setSelectingFiltered(false);
     }
@@ -349,7 +434,7 @@ export default function AirportList() {
   // 打开批量设置对话框
   const handleOpenBatchDialog = () => {
     if (selectedAirportIds.length === 0) {
-      showMessage('请先选择要修改的机场', 'warning');
+      showMessage(t('airports.page.messages.selectAirportsFirst'), 'warning');
       return;
     }
     setBatchForm(createBatchFormState());
@@ -359,22 +444,22 @@ export default function AirportList() {
   // 提交批量设置
   const handleBatchSubmit = async () => {
     if (selectedAirportIds.length === 0) {
-      showMessage('请先选择要修改的机场', 'warning');
+      showMessage(t('airports.page.messages.selectAirportsFirst'), 'warning');
       return;
     }
     if (!batchForm.applyGroup && !batchForm.applySchedule) {
-      showMessage('请至少选择一个要修改的字段', 'warning');
+      showMessage(t('airports.page.messages.selectFieldFirst'), 'warning');
       return;
     }
 
     const cronExpr = batchForm.cronExpr.trim();
     if (batchForm.applySchedule) {
       if (!cronExpr) {
-        showMessage('请输入Cron表达式', 'warning');
+        showMessage(t('airports.page.messages.cronRequired'), 'warning');
         return;
       }
       if (!validateCronExpression(cronExpr)) {
-        showMessage('Cron表达式格式不正确，格式为：分 时 日 月 周', 'error');
+        showMessage(t('airports.page.messages.cronInvalid'), 'error');
         return;
       }
     }
@@ -389,7 +474,7 @@ export default function AirportList() {
         cronExpr: batchForm.applySchedule ? cronExpr : ''
       });
       const count = response.data?.count || selectedAirportIds.length;
-      showMessage(`已批量更新 ${count} 个机场`);
+      showMessage(t('airports.page.messages.batchUpdated', { count }));
       setBatchDialogOpen(false);
       setBatchForm(createBatchFormState());
       setSelectedAirportIds([]);
@@ -397,7 +482,7 @@ export default function AirportList() {
       fetchGroupOptions();
     } catch (error) {
       console.error('批量更新机场失败:', error);
-      showMessage(error.message || '批量更新机场失败', 'error');
+      showMessage(error.message || t('airports.page.messages.batchUpdateFailed'), 'error');
     } finally {
       setBatchSubmitting(false);
     }
@@ -418,29 +503,7 @@ export default function AirportList() {
 
   // 添加机场
   const handleAdd = () => {
-    const newForm = {
-      id: 0,
-      name: '',
-      url: '',
-      cronExpr: '0 */12 * * *',
-      enabled: true,
-      group: '',
-      downloadWithProxy: false,
-      proxyLink: '',
-      userAgent: '',
-      fetchUsageInfo: false,
-      skipTLSVerify: false,
-      remark: '',
-      logo: '',
-      nodeNameWhitelist: '',
-      nodeNameBlacklist: '',
-      protocolWhitelist: '',
-      protocolBlacklist: '',
-      nodeNamePreprocess: '',
-      deduplicationRule: '',
-      nodeNameUniquify: false,
-      nodeNamePrefix: ''
-    };
+    const newForm = createAirportFormState({ requestHeaders: [createEmptyRequestHeader()] });
     setIsEdit(false);
     setAirportForm(newForm);
     setAirportFormSnapshot(newForm);
@@ -449,7 +512,7 @@ export default function AirportList() {
 
   // 编辑机场
   const handleEdit = (airport) => {
-    const editForm = {
+    const editForm = createAirportFormState({
       id: airport.id,
       name: airport.name,
       url: airport.url,
@@ -459,8 +522,12 @@ export default function AirportList() {
       downloadWithProxy: airport.downloadWithProxy || false,
       proxyLink: airport.proxyLink || '',
       userAgent: airport.userAgent || '',
+      requestHeaders: normalizeRequestHeadersForForm(airport.requestHeaders),
       fetchUsageInfo: airport.fetchUsageInfo || false,
       skipTLSVerify: airport.skipTLSVerify || false,
+      updateAfterDetect: airport.updateAfterDetect || false,
+      updateAfterDetectProfileId: airport.updateAfterDetectProfileId || 0,
+      updateAfterDetectChangedOnly: airport.updateAfterDetectChangedOnly || false,
       remark: airport.remark || '',
       logo: airport.logo || '',
       nodeNameWhitelist: airport.nodeNameWhitelist || '',
@@ -470,8 +537,9 @@ export default function AirportList() {
       nodeNamePreprocess: airport.nodeNamePreprocess || '',
       deduplicationRule: airport.deduplicationRule || '',
       nodeNameUniquify: airport.nodeNameUniquify || false,
-      nodeNamePrefix: airport.nodeNamePrefix || ''
-    };
+      nodeNamePrefix: airport.nodeNamePrefix || '',
+      nodeNameIntraUniquify: airport.nodeNameIntraUniquify || false
+    });
     setIsEdit(true);
     setAirportForm(editForm);
     setAirportFormSnapshot(editForm);
@@ -493,12 +561,12 @@ export default function AirportList() {
     if (!deleteTarget) return;
     try {
       await deleteAirport(deleteTarget.id, deleteWithNodes);
-      showMessage(deleteWithNodes ? '已删除机场及关联节点' : '已删除机场（保留节点）');
+      showMessage(t(deleteWithNodes ? 'airports.page.messages.deletedWithNodes' : 'airports.page.messages.deletedKeepNodes'));
       setSelectedAirportIds((prev) => prev.filter((id) => id !== deleteTarget.id));
       fetchAirports();
     } catch (error) {
       console.error('删除失败:', error);
-      showMessage(error.message || '删除失败', 'error');
+      showMessage(error.message || t('airports.page.messages.deleteFailed'), 'error');
     }
     setDeleteDialogOpen(false);
     setDeleteTarget(null);
@@ -506,14 +574,14 @@ export default function AirportList() {
 
   // 拉取机场
   const handlePull = (airport) => {
-    openConfirm('立即更新', `确定要立即更新机场 "${airport.name}" 的订阅吗？`, async () => {
+    openConfirm(t('airports.page.confirm.pullTitle'), t('airports.page.confirm.pullContent', { name: airport.name }), async () => {
       try {
         await pullAirport(airport.id);
-        showMessage('已提交更新任务，请稍后刷新查看结果');
+        showMessage(t('airports.page.messages.pullSubmitted'));
         // 任务完成后会自动触发刷新
       } catch (error) {
         console.error('拉取失败:', error);
-        showMessage(error.message || '提交更新任务失败', 'error');
+        showMessage(error.message || t('airports.page.messages.pullSubmitFailed'), 'error');
       }
     });
   };
@@ -534,25 +602,25 @@ export default function AirportList() {
     }
 
     if (enabledTotal === 0) {
-      showMessage('没有已启用的机场', 'warning');
+      showMessage(t('airports.page.messages.noEnabledAirports'), 'warning');
       return;
     }
 
     const confirmContent =
       typeof enabledTotal === 'number'
-        ? `确定要立即拉取所有已启用的机场订阅吗？（共 ${enabledTotal} 个）`
-        : '确定要立即拉取所有已启用的机场订阅吗？';
+        ? t('airports.page.confirm.pullAllContentWithCount', { count: enabledTotal })
+        : t('airports.page.confirm.pullAllContent');
 
-    openConfirm('拉取所有机场', confirmContent, async () => {
+    openConfirm(t('airports.page.confirm.pullAllTitle'), confirmContent, async () => {
       try {
         const res = await pullAllAirports();
         const count = res.data?.count;
 
         if (typeof count === 'number') {
           if (count > 0) {
-            showMessage(`已提交 ${count} 个机场的拉取任务，请稍后刷新查看结果`);
+            showMessage(t('airports.page.messages.pullAllSubmittedWithCount', { count }));
           } else {
-            showMessage('没有已启用的机场', 'warning');
+            showMessage(t('airports.page.messages.noEnabledAirports'), 'warning');
           }
           return;
         }
@@ -563,10 +631,10 @@ export default function AirportList() {
           return;
         }
 
-        showMessage('批量拉取任务已提交，请稍后刷新查看结果');
+        showMessage(t('airports.page.messages.pullAllSubmitted'));
       } catch (error) {
         console.error('批量拉取失败:', error);
-        showMessage(error.message || '批量拉取失败', 'error');
+        showMessage(error.message || t('airports.page.messages.pullAllFailed'), 'error');
       }
     });
   };
@@ -575,11 +643,11 @@ export default function AirportList() {
   const handleRefreshUsage = async (airport) => {
     try {
       await refreshAirportUsage(airport.id);
-      showMessage('用量信息已更新');
+      showMessage(t('airports.page.messages.usageRefreshed'));
       fetchAirports(); // 刷新列表
     } catch (error) {
       console.error('刷新用量失败:', error);
-      showMessage(error.message || '刷新用量失败', 'error');
+      showMessage(error.message || t('airports.page.messages.usageRefreshFailed'), 'error');
     }
   };
 
@@ -587,20 +655,20 @@ export default function AirportList() {
     (airport) => {
       const source = airport?.name?.trim();
       if (!source) {
-        showMessage('机场名称为空，无法打开节点管理', 'warning');
+        showMessage(t('airports.page.messages.emptyAirportNameForNodes'), 'warning');
         return;
       }
 
       navigate(`/subscription/nodes?source=${encodeURIComponent(source)}`);
     },
-    [navigate, showMessage]
+    [navigate, showMessage, t]
   );
 
   const handleQuickCheck = useCallback(
     async (airport) => {
       const source = airport?.name?.trim();
       if (!source) {
-        showMessage('机场名称为空，无法执行快速检测', 'warning');
+        showMessage(t('airports.page.messages.emptyAirportNameForQuickCheck'), 'warning');
         return;
       }
 
@@ -609,7 +677,7 @@ export default function AirportList() {
         const nodeIds = Array.isArray(response.data) ? response.data : [];
 
         if (nodeIds.length === 0) {
-          showMessage(`未找到来源为「${source}」的节点`, 'warning');
+          showMessage(t('airports.page.messages.noNodesForSource', { source }), 'warning');
           return;
         }
 
@@ -617,49 +685,64 @@ export default function AirportList() {
         setProfileSelectOpen(true);
       } catch (error) {
         console.error('获取机场节点失败:', error);
-        showMessage(error.message || '获取机场节点失败', 'error');
+        showMessage(error.message || t('airports.page.messages.loadAirportNodesFailed'), 'error');
       }
     },
-    [showMessage]
+    [showMessage, t]
   );
 
   // 提交表单
   const handleSubmit = async () => {
     // 验证
     if (!airportForm.name.trim()) {
-      showMessage('请输入机场名称', 'warning');
+      showMessage(t('airports.page.messages.nameRequired'), 'warning');
       return;
     }
     if (!airportForm.url.trim()) {
-      showMessage('请输入订阅地址', 'warning');
+      showMessage(t('airports.page.messages.urlRequired'), 'warning');
       return;
     }
     const urlPattern = /^(https?|ftp):\/\/[^\s/$.?#].[^\s]*$/i;
     if (!urlPattern.test(airportForm.url.trim())) {
-      showMessage('请输入有效的订阅地址', 'warning');
+      showMessage(t('airports.page.messages.urlInvalid'), 'warning');
       return;
     }
     if (!airportForm.cronExpr.trim()) {
-      showMessage('请输入Cron表达式', 'warning');
+      showMessage(t('airports.page.messages.cronRequired'), 'warning');
       return;
     }
     if (!validateCronExpression(airportForm.cronExpr.trim())) {
-      showMessage('Cron表达式格式不正确，格式为：分 时 日 月 周', 'error');
+      showMessage(t('airports.page.messages.cronInvalid'), 'error');
+      return;
+    }
+    if (airportForm.updateAfterDetect && !airportForm.updateAfterDetectProfileId) {
+      showMessage(t('airports.page.messages.detectProfileRequired'), 'warning');
+      return;
+    }
+
+    const { requestHeaders, error: requestHeadersError } = normalizeRequestHeadersForSubmit(airportForm.requestHeaders, t);
+    if (requestHeadersError) {
+      showMessage(requestHeadersError, 'warning');
       return;
     }
 
     try {
+      const normalizedAirportForm = {
+        ...airportForm,
+        requestHeaders
+      };
+
       // 在提交前计算配置变更状态（提交后 snapshot 会被清空）
       const needPullToApply = isEdit && hasNodeProcessConfigChanged(airportFormSnapshot, airportForm);
       const savedId = airportForm.id;
       const savedName = airportForm.name;
 
       if (isEdit) {
-        await updateAirport(airportForm.id, airportForm);
-        showMessage(needPullToApply ? '更新成功（节点处理配置需重新拉取后生效）' : '更新成功');
+        await updateAirport(airportForm.id, normalizedAirportForm);
+        showMessage(t(needPullToApply ? 'airports.page.messages.updateSuccessNeedPull' : 'airports.page.messages.updateSuccess'));
       } else {
-        await addAirport(airportForm);
-        showMessage('添加成功');
+        await addAirport(normalizedAirportForm);
+        showMessage(t('airports.page.messages.addSuccess'));
       }
       setFormOpen(false);
       setAirportFormSnapshot(null);
@@ -668,22 +751,22 @@ export default function AirportList() {
       // 节点处理配置变更后提示立即拉取，使其对”已存在节点”生效
       if (needPullToApply) {
         openConfirm(
-          '立即拉取以生效',
-          `节点处理配置已变更，需要重新拉取订阅才能应用到已存在的节点。是否立即拉取机场 “${savedName}”？`,
+          t('airports.page.confirm.pullToApplyTitle'),
+          t('airports.page.confirm.pullToApplyContent', { name: savedName }),
           async () => {
             try {
               await pullAirport(savedId);
-              showMessage('已提交更新任务，请稍后刷新查看结果');
+              showMessage(t('airports.page.messages.pullSubmitted'));
             } catch (error) {
               console.error('拉取失败:', error);
-              showMessage(error.message || '提交更新任务失败', 'error');
+              showMessage(error.message || t('airports.page.messages.pullSubmitFailed'), 'error');
             }
           }
         );
       }
     } catch (error) {
       console.error('提交失败:', error);
-      showMessage(error.message || (isEdit ? '更新失败' : '添加失败'), 'error');
+      showMessage(error.message || t(isEdit ? 'airports.page.messages.updateFailed' : 'airports.page.messages.addFailed'), 'error');
     }
   };
 
@@ -781,7 +864,7 @@ export default function AirportList() {
 
   return (
     <MainCard
-      title="机场管理"
+      title={t('airports.title')}
       secondary={
         <Stack direction="row" spacing={1} alignItems="center">
           {/* 视图切换按钮（仅桌面端显示） */}
@@ -807,9 +890,9 @@ export default function AirportList() {
             </ToggleButtonGroup>
           )}
           <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd}>
-            添加机场
+            {t('airports.page.actions.addAirport')}
           </Button>
-          <Tooltip title="拉取所有已启用机场的订阅" arrow>
+          <Tooltip title={t('airports.page.actions.pullAllTooltip')} arrow>
             <IconButton onClick={handlePullAll} color="primary">
               <CloudSyncIcon />
             </IconButton>
@@ -834,8 +917,8 @@ export default function AirportList() {
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ xs: 'stretch', sm: 'center' }}>
           <TextField
             size="small"
-            label="关键字"
-            placeholder="搜索名称或备注"
+            label={t('airports.page.filters.keyword')}
+            placeholder={t('airports.page.filters.keywordPlaceholder')}
             value={searchKeyword}
             onChange={(e) => setSearchKeyword(e.target.value)}
             sx={{ minWidth: 150 }}
@@ -845,15 +928,15 @@ export default function AirportList() {
             options={groupOptions}
             value={searchGroup || null}
             onChange={(e, newValue) => setSearchGroup(newValue || '')}
-            renderInput={(params) => <TextField {...params} label="分组" />}
+            renderInput={(params) => <TextField {...params} label={t('airports.page.filters.group')} />}
             sx={{ minWidth: 150 }}
           />
           <FormControl size="small" sx={{ minWidth: 100 }}>
-            <InputLabel>状态</InputLabel>
-            <Select value={searchEnabled} label="状态" onChange={(e) => setSearchEnabled(e.target.value)}>
-              <MenuItem value="">全部</MenuItem>
-              <MenuItem value="true">启用</MenuItem>
-              <MenuItem value="false">禁用</MenuItem>
+            <InputLabel>{t('airports.page.filters.status')}</InputLabel>
+            <Select value={searchEnabled} label={t('airports.page.filters.status')} onChange={(e) => setSearchEnabled(e.target.value)}>
+              <MenuItem value="">{t('common.all')}</MenuItem>
+              <MenuItem value="true">{t('common.enabled')}</MenuItem>
+              <MenuItem value="false">{t('common.disabled')}</MenuItem>
             </Select>
           </FormControl>
           <Button
@@ -867,7 +950,7 @@ export default function AirportList() {
               setPage(0);
             }}
           >
-            重置
+            {t('common.reset')}
           </Button>
           <Button
             variant="contained"
@@ -878,7 +961,7 @@ export default function AirportList() {
               fetchAirports();
             }}
           >
-            搜索
+            {t('airports.page.actions.search')}
           </Button>
         </Stack>
       </Box>
@@ -905,12 +988,21 @@ export default function AirportList() {
                     }}
                   />
                   <Typography variant="body2" sx={{ whiteSpace: 'nowrap', color: 'text.primary', fontWeight: 500 }}>
-                    本页全选
+                    {t('airports.page.selection.currentPage')}
                   </Typography>
                 </Box>
                 <Stack direction="row" spacing={0.75} sx={{ flexWrap: 'wrap', justifyContent: 'flex-end', gap: 0.75 }}>
-                  <Chip size="small" label={`已选 ${selectedAirportIds.length}`} sx={getSelectionChipSx(hasSelection)} />
-                  <Chip variant="outlined" size="small" label={`筛选结果 ${totalItems}`} sx={getSelectionChipSx(false)} />
+                  <Chip
+                    size="small"
+                    label={t('airports.page.selection.selectedCount', { count: selectedAirportIds.length })}
+                    sx={getSelectionChipSx(hasSelection)}
+                  />
+                  <Chip
+                    variant="outlined"
+                    size="small"
+                    label={t('airports.page.selection.filteredCount', { count: totalItems })}
+                    sx={getSelectionChipSx(false)}
+                  />
                 </Stack>
               </Stack>
 
@@ -933,7 +1025,7 @@ export default function AirportList() {
                     gridColumn: '1 / -1'
                   }}
                 >
-                  批量设置
+                  {t('airports.page.actions.batchSettings')}
                 </Button>
                 <Button
                   fullWidth
@@ -943,7 +1035,7 @@ export default function AirportList() {
                   disabled={selectingFiltered || totalItems === 0 || allFilteredSelected}
                   sx={selectFilteredButtonSx}
                 >
-                  {selectingFiltered ? '选择中...' : '全选当前筛选'}
+                  {selectingFiltered ? t('airports.page.actions.selecting') : t('airports.page.actions.selectFiltered')}
                 </Button>
                 <Button
                   fullWidth
@@ -953,7 +1045,7 @@ export default function AirportList() {
                   disabled={!hasSelection}
                   sx={clearSelectionButtonSx}
                 >
-                  清空选择
+                  {t('airports.page.actions.clearSelection')}
                 </Button>
               </Box>
             </Stack>
@@ -973,11 +1065,20 @@ export default function AirportList() {
                     }}
                   />
                   <Typography variant="body2" sx={{ whiteSpace: 'nowrap', color: 'text.primary', fontWeight: 500 }}>
-                    本页全选
+                    {t('airports.page.selection.currentPage')}
                   </Typography>
                 </Box>
-                <Chip size="small" label={`已选 ${selectedAirportIds.length}`} sx={getSelectionChipSx(hasSelection)} />
-                <Chip variant="outlined" size="small" label={`筛选结果 ${totalItems}`} sx={getSelectionChipSx(false)} />
+                <Chip
+                  size="small"
+                  label={t('airports.page.selection.selectedCount', { count: selectedAirportIds.length })}
+                  sx={getSelectionChipSx(hasSelection)}
+                />
+                <Chip
+                  variant="outlined"
+                  size="small"
+                  label={t('airports.page.selection.filteredCount', { count: totalItems })}
+                  sx={getSelectionChipSx(false)}
+                />
               </Stack>
 
               <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
@@ -988,10 +1089,10 @@ export default function AirportList() {
                   disabled={selectingFiltered || totalItems === 0 || allFilteredSelected}
                   sx={selectFilteredButtonSx}
                 >
-                  {selectingFiltered ? '选择中...' : '全选当前筛选'}
+                  {selectingFiltered ? t('airports.page.actions.selecting') : t('airports.page.actions.selectFiltered')}
                 </Button>
                 <Button size="small" variant="outlined" onClick={handleClearSelection} disabled={!hasSelection} sx={clearSelectionButtonSx}>
-                  清空选择
+                  {t('airports.page.actions.clearSelection')}
                 </Button>
                 <Button
                   size="small"
@@ -1001,7 +1102,7 @@ export default function AirportList() {
                   disabled={!hasSelection}
                   sx={batchActionButtonSx}
                 >
-                  批量设置
+                  {t('airports.page.actions.batchSettings')}
                 </Button>
               </Stack>
             </Stack>
@@ -1021,6 +1122,7 @@ export default function AirportList() {
           onOpenNodes={handleOpenNodeManagement}
           onQuickCheck={handleQuickCheck}
           onRefreshUsage={handleRefreshUsage}
+          nodeCheckProfiles={nodeCheckProfiles}
         />
       ) : viewMode === 'list' ? (
         <AirportListView
@@ -1033,6 +1135,7 @@ export default function AirportList() {
           onOpenNodes={handleOpenNodeManagement}
           onQuickCheck={handleQuickCheck}
           onRefreshUsage={handleRefreshUsage}
+          nodeCheckProfiles={nodeCheckProfiles}
         />
       ) : (
         <AirportTable
@@ -1045,6 +1148,7 @@ export default function AirportList() {
           onOpenNodes={handleOpenNodeManagement}
           onQuickCheck={handleQuickCheck}
           onRefreshUsage={handleRefreshUsage}
+          nodeCheckProfiles={nodeCheckProfiles}
         />
       )}
 
@@ -1075,6 +1179,7 @@ export default function AirportList() {
         proxyNodeOptions={proxyNodeOptions}
         loadingProxyNodes={loadingProxyNodes}
         protocolOptions={protocolOptions}
+        nodeCheckProfiles={nodeCheckProfiles}
         onClose={() => {
           setFormOpen(false);
           setAirportFormSnapshot(null);

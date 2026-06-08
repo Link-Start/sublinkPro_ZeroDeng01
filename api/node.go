@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"sublink/models"
@@ -42,6 +43,14 @@ func normalizeIPType(value string) string {
 
 func normalizeUnlockStatus(value string) string {
 	return unlock.NormalizeUnlockStatus(value)
+}
+
+func failNodeNameConflict(c *gin.Context, err error) bool {
+	if errors.Is(err, models.ErrNodeNameExists) {
+		utils.FailWithMsg(c, "节点备注名称已存在，请换一个备注")
+		return true
+	}
+	return false
 }
 
 func parseUnlockRulesFromQuery(c *gin.Context) []models.UnlockFilterRule {
@@ -203,12 +212,17 @@ func NodeUpdadte(c *gin.Context) {
 	oldname := c.PostForm("oldname")
 	oldlink := c.PostForm("oldlink")
 	link := c.PostForm("link")
+	nameMode, hasNameMode := c.GetPostForm("nameMode")
+	if !hasNameMode {
+		nameMode, hasNameMode = c.GetPostForm("NameMode")
+	}
 	dialerProxyName := c.PostForm("dialerProxyName")
 	group := c.PostForm("group")
-	if name == "" || link == "" {
-		utils.FailWithMsg(c, "节点名称 or 备注不能为空")
+	if link == "" {
+		utils.FailWithMsg(c, "节点链接不能为空")
 		return
 	}
+	userProvidedName := strings.TrimSpace(name) != ""
 	// 查找旧节点
 	Node.Name = oldname
 	Node.Link = oldlink
@@ -218,7 +232,11 @@ func NodeUpdadte(c *gin.Context) {
 		return
 	}
 	oldContentHash := Node.ContentHash
-	Node.Name = name
+	if hasNameMode {
+		Node.NameMode = models.NormalizeNodeNameMode(nameMode)
+	} else {
+		Node.NameMode = models.NormalizeNodeNameMode(Node.NameMode)
+	}
 
 	//更新构造节点元数据
 	// 检测是否为 WireGuard 配置文件格式，如果是则转换为 URL 格式
@@ -236,8 +254,19 @@ func NodeUpdadte(c *gin.Context) {
 		utils.Error("解析节点链接失败: %v", err)
 		return
 	}
-	if Node.Name == "" {
+	Node.Name = name
+	if strings.TrimSpace(Node.Name) == "" {
 		Node.Name = identity.Name
+	}
+	if userProvidedName {
+		if err := models.EnsureNodeNameAvailable(Node.Name, Node.ID); err != nil {
+			if !failNodeNameConflict(c, err) {
+				utils.FailWithMsg(c, "检查节点备注名称失败")
+			}
+			return
+		}
+	} else {
+		Node.Name = models.GenerateUniqueNodeNameWithSource(Node.Name, Node.Source, Node.ID, nil)
 	}
 	Node.LinkName = identity.Name
 	Node.LinkAddress = identity.Address
@@ -288,6 +317,9 @@ func NodeUpdadte(c *gin.Context) {
 
 	err = Node.Update()
 	if err != nil {
+		if failNodeNameConflict(c, err) {
+			return
+		}
 		utils.FailWithMsg(c, "更新失败")
 		return
 	}
@@ -421,12 +453,18 @@ func NodeAdd(c *gin.Context) {
 	var Node models.Node
 	link := c.PostForm("link")
 	name := c.PostForm("name")
+	nameModeInput := c.PostForm("nameMode")
+	if nameModeInput == "" {
+		nameModeInput = c.PostForm("NameMode")
+	}
+	nameMode := models.NormalizeNodeNameMode(nameModeInput)
 	dialerProxyName := c.PostForm("dialerProxyName")
 	group := c.PostForm("group")
 	if link == "" {
 		utils.FailWithMsg(c, "link  不能为空")
 		return
 	}
+	userProvidedName := strings.TrimSpace(name) != ""
 
 	// 读取全局配置：是否启用跨机场去重（默认启用）
 	crossAirportDedupVal, _ := models.GetSetting("cross_airport_dedup_enabled")
@@ -454,9 +492,10 @@ func NodeAdd(c *gin.Context) {
 					failedCount++
 					continue
 				}
-				// 创建节点并添加
+				// 创建节点并添加；Clash YAML 中的备注由系统生成，重复时自动追加编号。
 				var n models.Node
-				n.Name = proxy.Name
+				n.Name = models.GenerateUniqueNodeName(proxy.Name, 0, nil)
+				n.NameMode = models.NodeNameModeLink
 				n.Link = proxyLink
 				n.LinkName = proxy.Name
 				n.LinkHost = proxy.Server
@@ -503,13 +542,24 @@ func NodeAdd(c *gin.Context) {
 		return
 	}
 	Node.Name = name
+	Node.NameMode = nameMode
 	identity, err := protocol.ExtractLinkIdentity(link)
 	if err != nil {
 		utils.Error("解析节点链接失败: %v", err)
 		return
 	}
-	if name == "" {
+	if strings.TrimSpace(Node.Name) == "" {
 		Node.Name = identity.Name
+	}
+	if userProvidedName {
+		if err := models.EnsureNodeNameAvailable(Node.Name, 0); err != nil {
+			if !failNodeNameConflict(c, err) {
+				utils.FailWithMsg(c, "检查节点备注名称失败")
+			}
+			return
+		}
+	} else {
+		Node.Name = models.GenerateUniqueNodeName(Node.Name, 0, nil)
 	}
 	Node.LinkName = identity.Name
 	Node.LinkAddress = identity.Address
@@ -561,6 +611,9 @@ func NodeAdd(c *gin.Context) {
 
 	err = Node.Add()
 	if err != nil {
+		if failNodeNameConflict(c, err) {
+			return
+		}
 		utils.FailWithMsg(c, "添加失败检查一下是否节点重复")
 		return
 	}

@@ -1,11 +1,13 @@
 package protocol
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sublink/cache"
@@ -44,7 +46,7 @@ func (fp *FlexPort) UnmarshalYAML(value *yaml.Node) error {
 }
 
 // MarshalYAML 实现 yaml.Marshaler 接口，始终输出为 int
-func (fp FlexPort) MarshalYAML() (interface{}, error) {
+func (fp FlexPort) MarshalYAML() (any, error) {
 	return int(fp), nil
 }
 
@@ -53,47 +55,119 @@ func (fp FlexPort) Int() int {
 	return int(fp)
 }
 
+// IsZero lets YAML omitempty suppress absent ports for protocols that use
+// alternative port fields such as Mieru port-range.
+func (fp FlexPort) IsZero() bool {
+	return fp == 0
+}
+
+// Mbps 是 Clash 兼容的带宽数值类型。
+// 兼容 provider 里把 up/down 之类字段写成 "11 Mbps" 这种字符串的情况，但序列化时仍输出整数。
+type Mbps int
+
+var bandwidthRatePattern = regexp.MustCompile(`^(\d+)\s*([KMGTkmgt]?)([Bb])ps$`)
+
+// UnmarshalYAML 支持把带宽字段解析为整数、裸数字字符串或标准速率字符串。
+// 这里保留对 Hysteria/Hysteria2 兼容格式的支持，但拒绝非标准后缀，避免把非法带宽静默降级。
+func (m *Mbps) UnmarshalYAML(value *yaml.Node) error {
+	var intVal int
+	if err := value.Decode(&intVal); err == nil {
+		*m = Mbps(intVal)
+		return nil
+	}
+
+	var strVal string
+	if err := value.Decode(&strVal); err != nil {
+		return fmt.Errorf("无法解析带宽值")
+	}
+	strVal = strings.TrimSpace(strVal)
+	if strVal == "" {
+		*m = 0
+		return nil
+	}
+	if directVal, err := strconv.Atoi(strVal); err == nil {
+		*m = Mbps(directVal)
+		return nil
+	}
+	matches := bandwidthRatePattern.FindStringSubmatch(strVal)
+	if matches == nil {
+		return fmt.Errorf("无法解析带宽值 %q", strVal)
+	}
+	base, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return fmt.Errorf("无法将带宽值 %q 转换为整数: %w", strVal, err)
+	}
+	switch strings.ToUpper(matches[2]) {
+	case "", "M":
+		*m = Mbps(base)
+		return nil
+	case "G":
+		*m = Mbps(base * 1000)
+		return nil
+	case "T":
+		*m = Mbps(base * 1000 * 1000)
+		return nil
+	case "K":
+		return fmt.Errorf("带宽值 %q 使用了 Kbps 单位，无法无损转换为 Mbps", strVal)
+	default:
+		return fmt.Errorf("无法解析带宽值 %q", strVal)
+	}
+}
+
+// MarshalYAML 始终把带宽写成整数，避免把内部类型泄漏成字符串。
+func (m Mbps) MarshalYAML() (any, error) {
+	return int(m), nil
+}
+
 type Proxy struct {
-	Name                  string                 `yaml:"name,omitempty"`                  // 节点名称
-	Type                  string                 `yaml:"type,omitempty"`                  // 代理类型 (ss, vmess, trojan, etc.)
-	Server                string                 `yaml:"server,omitempty"`                // 服务器地址
-	Port                  FlexPort               `yaml:"port,omitempty"`                  // 服务器端口
-	Ports                 string                 `yaml:"ports,omitempty"`                 // hysteria2端口跳跃
-	Cipher                string                 `yaml:"cipher,omitempty"`                // 加密方式
-	Username              string                 `yaml:"username,omitempty"`              // 用户名 (socks5 等)
-	Password              string                 `yaml:"password,omitempty"`              // 密码
-	Client_fingerprint    string                 `yaml:"client-fingerprint,omitempty"`    // 客户端指纹 (uTLS)
-	Tfo                   bool                   `yaml:"tfo,omitempty"`                   // TCP Fast Open
-	Udp                   bool                   `yaml:"udp,omitempty"`                   // 是否启用 UDP
-	Skip_cert_verify      bool                   `yaml:"skip-cert-verify,omitempty"`      // 跳过证书验证
-	Tls                   bool                   `yaml:"tls,omitempty"`                   // 是否启用 TLS
-	Servername            string                 `yaml:"servername,omitempty"`            // TLS SNI
-	Flow                  string                 `yaml:"flow,omitempty"`                  // 流控 (xtls-rprx-vision 等)
-	AlterId               string                 `yaml:"alterId,omitempty"`               // VMess AlterId
-	Network               string                 `yaml:"network,omitempty"`               // 传输协议 (ws, grpc, etc.)
-	Reality_opts          map[string]interface{} `yaml:"reality-opts,omitempty"`          // Reality 选项
-	Ws_opts               map[string]interface{} `yaml:"ws-opts,omitempty"`               // WebSocket 选项
-	Grpc_opts             map[string]interface{} `yaml:"grpc-opts,omitempty"`             // gRPC 选项
-	Auth_str              string                 `yaml:"auth-str,omitempty"`              // Hysteria 认证字符串
-	Auth                  string                 `yaml:"auth,omitempty"`                  // 认证信息
-	Up                    int                    `yaml:"up,omitempty"`                    // 上行带宽限制
-	Down                  int                    `yaml:"down,omitempty"`                  // 下行带宽限制
-	Up_Speed              int                    `yaml:"up-speed,omitempty"`              // 上行带宽限制兼容stash
-	Down_Speed            int                    `yaml:"down-speed,omitempty"`            // 下行带宽限制兼容stash
-	Alpn                  []string               `yaml:"alpn,omitempty"`                  // ALPN
-	Sni                   string                 `yaml:"sni,omitempty"`                   // SNI
-	Obfs                  string                 `yaml:"obfs,omitempty"`                  // 混淆模式 (SSR/Hysteria2)
-	Obfs_password         string                 `yaml:"obfs-password,omitempty"`         // 混淆密码
-	Protocol              string                 `yaml:"protocol,omitempty"`              // SSR 协议
-	Uuid                  string                 `yaml:"uuid,omitempty"`                  // UUID (VMess/VLESS)
-	Peer                  string                 `yaml:"peer,omitempty"`                  // Peer (Hysteria)
-	Congestion_controller string                 `yaml:"congestion-controller,omitempty"` // 拥塞控制 (Tuic)
-	Udp_relay_mode        string                 `yaml:"udp-relay-mode,omitempty"`        // UDP 转发模式 (Tuic)
-	Disable_sni           bool                   `yaml:"disable-sni,omitempty"`           // 禁用 SNI (Tuic)
-	Dialer_proxy          string                 `yaml:"dialer-proxy,omitempty"`          // 前置代理
+	Name                  string         `yaml:"name,omitempty"`                        // 节点名称
+	Type                  string         `yaml:"type,omitempty"`                        // 代理类型 (ss, vmess, trojan, etc.)
+	Server                string         `yaml:"server,omitempty"`                      // 服务器地址
+	Port                  FlexPort       `yaml:"port,omitempty"`                        // 服务器端口
+	PortRange             string         `yaml:"port-range,omitempty"`                  // 端口范围 (Mieru)
+	Ports                 string         `yaml:"ports,omitempty"`                       // hysteria2端口跳跃
+	Transport             string         `yaml:"transport,omitempty"`                   // 传输协议 (Mieru TCP/UDP)
+	Cipher                string         `yaml:"cipher,omitempty"`                      // 加密方式
+	Username              string         `yaml:"username,omitempty"`                    // 用户名 (socks5 等)
+	Password              string         `yaml:"password,omitempty"`                    // 密码
+	Multiplexing          string         `yaml:"multiplexing,omitempty"`                // Mieru 多路复用级别
+	TrafficPattern        string         `yaml:"traffic-pattern,omitempty"`             // Mieru 流量模式
+	Client_fingerprint    string         `yaml:"client-fingerprint,omitempty"`          // 客户端指纹 (uTLS)
+	Fingerprint           string         `yaml:"fingerprint,omitempty"`                 // 服务端证书 SHA-256 指纹
+	Tfo                   bool           `yaml:"tfo,omitempty"`                         // TCP Fast Open
+	Udp                   bool           `yaml:"udp,omitempty"`                         // 是否启用 UDP
+	Skip_cert_verify      bool           `yaml:"skip-cert-verify,omitempty"`            // 跳过证书验证
+	Tls                   bool           `yaml:"tls,omitempty"`                         // 是否启用 TLS
+	Servername            string         `yaml:"servername,omitempty"`                  // TLS SNI
+	Flow                  string         `yaml:"flow,omitempty"`                        // 流控 (xtls-rprx-vision 等)
+	AlterId               string         `yaml:"alterId,omitempty"`                     // VMess AlterId
+	Network               string         `yaml:"network,omitempty"`                     // 传输协议 (ws, grpc, etc.)
+	Reality_opts          map[string]any `yaml:"reality-opts,omitempty"`                // Reality 选项
+	Ws_opts               map[string]any `yaml:"ws-opts,omitempty"`                     // WebSocket 选项
+	Grpc_opts             map[string]any `yaml:"grpc-opts,omitempty"`                   // gRPC 选项
+	Auth_str              string         `yaml:"auth-str,omitempty"`                    // Hysteria 认证字符串
+	Auth                  string         `yaml:"auth,omitempty"`                        // 认证信息
+	Up                    Mbps           `yaml:"up,omitempty"`                          // 上行带宽限制
+	Down                  Mbps           `yaml:"down,omitempty"`                        // 下行带宽限制
+	AnyTLSIdleCheck       int            `yaml:"idle-session-check-interval,omitempty"` // AnyTLS 空闲会话检查间隔
+	AnyTLSIdleTimeout     int            `yaml:"idle-session-timeout,omitempty"`        // AnyTLS 空闲会话超时时间
+	AnyTLSMinIdle         int            `yaml:"min-idle-session,omitempty"`            // AnyTLS 最小空闲会话数
+	Up_Speed              Mbps           `yaml:"up-speed,omitempty"`                    // 上行带宽限制兼容stash
+	Down_Speed            Mbps           `yaml:"down-speed,omitempty"`                  // 下行带宽限制兼容stash
+	Alpn                  []string       `yaml:"alpn,omitempty"`                        // ALPN
+	Sni                   string         `yaml:"sni,omitempty"`                         // SNI
+	Obfs                  string         `yaml:"obfs,omitempty"`                        // 混淆模式 (SSR/Hysteria2)
+	Obfs_password         string         `yaml:"obfs-password,omitempty"`               // 混淆密码
+	Protocol              string         `yaml:"protocol,omitempty"`                    // SSR 协议
+	Uuid                  string         `yaml:"uuid,omitempty"`                        // UUID (VMess/VLESS)
+	Peer                  string         `yaml:"peer,omitempty"`                        // Peer (Hysteria)
+	Congestion_controller string         `yaml:"congestion-controller,omitempty"`       // 拥塞控制 (Tuic)
+	Udp_relay_mode        string         `yaml:"udp-relay-mode,omitempty"`              // UDP 转发模式 (Tuic)
+	Disable_sni           bool           `yaml:"disable-sni,omitempty"`                 // 禁用 SNI (Tuic)
+	Dialer_proxy          string         `yaml:"dialer-proxy,omitempty"`                // 前置代理
 	// SS 插件字段
-	Plugin      string                 `yaml:"plugin,omitempty"`      // SS 插件名称
-	Plugin_opts map[string]interface{} `yaml:"plugin-opts,omitempty"` // SS 插件选项
+	Plugin      string         `yaml:"plugin,omitempty"`      // SS 插件名称
+	Plugin_opts map[string]any `yaml:"plugin-opts,omitempty"` // SS 插件选项
 	// WireGuard 特有字段
 	Private_key    string   `yaml:"private-key,omitempty"`    // WireGuard 私钥
 	Public_key     string   `yaml:"public-key,omitempty"`     // WireGuard 公钥
@@ -106,10 +180,28 @@ type Proxy struct {
 	Version        int      `yaml:"version,omitempty"`        // 版本
 	Token          string   `yaml:"token,omitempty"`          // Tuic 令牌v4
 	// VLESS 特有字段
-	Packet_encoding string                 `yaml:"packet-encoding,omitempty"` // VLESS packet-encoding (xudp/packetaddr)
-	H2_opts         map[string]interface{} `yaml:"h2-opts,omitempty"`         // HTTP/2 传输层选项
-	Http_opts       map[string]interface{} `yaml:"http-opts,omitempty"`       // HTTP 传输层选项
-	XHTTP_opts      map[string]interface{} `yaml:"xhttp-opts,omitempty"`
+	Encryption      string         `yaml:"encryption,omitempty"`
+	Packet_encoding string         `yaml:"packet-encoding,omitempty"` // VLESS packet-encoding (xudp/packetaddr)
+	H2_opts         map[string]any `yaml:"h2-opts,omitempty"`         // HTTP/2 传输层选项
+	Http_opts       map[string]any `yaml:"http-opts,omitempty"`       // HTTP 传输层选项
+	XHTTP_opts      map[string]any `yaml:"xhttp-opts,omitempty"`
+	ECH_opts        map[string]any `yaml:"ech-opts,omitempty"`
+}
+
+func sanitizeCertificateFingerprint(fingerprint string) string {
+	fingerprint = strings.ReplaceAll(fingerprint, ":", "")
+	fingerprint = strings.ReplaceAll(fingerprint, "-", "")
+	if len(fingerprint) != 64 {
+		return ""
+	}
+	for _, c := range fingerprint {
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
+			continue
+		}
+		return ""
+	}
+	fingerprint = strings.ToLower(fingerprint)
+	return fingerprint
 }
 
 type ProxyGroup struct {
@@ -127,14 +219,14 @@ type Urls struct {
 }
 
 // 删除opts中的空值
-func DeleteOpts(opts map[string]interface{}) {
+func DeleteOpts(opts map[string]any) {
 	for k, v := range opts {
 		switch v := v.(type) {
 		case string:
 			if v == "" {
 				delete(opts, k)
 			}
-		case map[string]interface{}:
+		case map[string]any:
 			DeleteOpts(v)
 			if len(v) == 0 {
 				delete(opts, k)
@@ -142,7 +234,7 @@ func DeleteOpts(opts map[string]interface{}) {
 		}
 	}
 }
-func convertToInt(value interface{}) (int, error) {
+func convertToInt(value any) (int, error) {
 	switch v := value.(type) {
 	case int:
 		return v, nil
@@ -155,7 +247,7 @@ func convertToInt(value interface{}) (int, error) {
 	}
 }
 
-func isTruthyConfigValue(value interface{}) bool {
+func isTruthyConfigValue(value any) bool {
 	switch v := value.(type) {
 	case bool:
 		return v
@@ -176,7 +268,7 @@ func isTruthyConfigValue(value interface{}) bool {
 }
 
 // shouldPreserveProxyGroup 判断代理组是否应保留模板原始语义，而不是在服务端展开成固定节点列表。
-func shouldPreserveProxyGroup(proxyGroup map[string]interface{}) bool {
+func shouldPreserveProxyGroup(proxyGroup map[string]any) bool {
 	for _, field := range []string{"include-all", "include-all-proxies", "include-all-providers"} {
 		if isTruthyConfigValue(proxyGroup[field]) {
 			return true
@@ -195,12 +287,12 @@ func shouldPreserveProxyGroup(proxyGroup map[string]interface{}) bool {
 
 // convertSSPluginOpts 将 SsPlugin 转换为 Clash 格式的 plugin-opts
 // 根据不同插件类型生成对应的配置
-func convertSSPluginOpts(plugin SsPlugin) map[string]interface{} {
+func convertSSPluginOpts(plugin SsPlugin) map[string]any {
 	if plugin.Name == "" {
 		return nil
 	}
 
-	opts := make(map[string]interface{})
+	opts := make(map[string]any)
 
 	// 从结构体字段读取值
 	if plugin.Mode != "" {
@@ -284,12 +376,17 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 	var data []byte
 	var err error
 	if strings.Contains(yamlfile, "://") {
-		resp, err := http.Get(yamlfile)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, yamlfile, nil)
 		if err != nil {
 			utils.Error("http.Get error: %v", err)
 			return nil, err
 		}
-		defer resp.Body.Close()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			utils.Error("http.Get error: %v", err)
+			return nil, err
+		}
+		defer func() { _ = resp.Body.Close() }()
 		data, err = io.ReadAll(resp.Body)
 		if err != nil {
 			utils.Error("error: %v", err)
@@ -311,7 +408,7 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 		}
 	}
 	// 解析 YAML 文件
-	config := make(map[string]interface{})
+	config := make(map[string]any)
 	err = yaml.Unmarshal(data, &config)
 	if err != nil {
 		utils.Error("error: %v", err)
@@ -319,10 +416,10 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 	}
 
 	// 检查 "proxies" 键是否存在于 config 中
-	proxies, ok := config["proxies"].([]interface{})
+	proxies, ok := config["proxies"].([]any)
 	if !ok {
 		// 如果 "proxies" 键不存在，创建一个新的切片
-		proxies = []interface{}{}
+		proxies = []any{}
 	}
 	// 定义一个代理列表名字
 	ProxiesNameList := []string{}
@@ -334,9 +431,9 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 	// proxies = append(proxies, newProxy)
 	config["proxies"] = proxies
 	// 往ProxyGroup中插入代理列表
-	proxyGroups, ok := config["proxy-groups"].([]interface{})
+	proxyGroups, ok := config["proxy-groups"].([]any)
 	if !ok {
-		proxyGroups = []interface{}{}
+		proxyGroups = []any{}
 	}
 
 	// 插入自定义代理组（在模板组之后）
@@ -344,7 +441,7 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 	if len(customGroups) > 0 && len(customGroups[0]) > 0 {
 		for _, cg := range customGroups[0] {
 			// 构建代理组 map
-			groupMap := map[string]interface{}{
+			groupMap := map[string]any{
 				"name":          cg.Name,
 				"type":          cg.Type,
 				"proxies":       cg.Proxies,
@@ -395,7 +492,7 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 	}
 
 	for i, pg := range proxyGroups {
-		proxyGroup, ok := pg.(map[string]interface{})
+		proxyGroup, ok := pg.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -419,9 +516,9 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 		}
 
 		// 获取现有的 proxies 列表
-		var existingProxies []interface{}
+		var existingProxies []any
 		if proxyGroup["proxies"] != nil {
-			existingProxies, _ = proxyGroup["proxies"].([]interface{})
+			existingProxies, _ = proxyGroup["proxies"].([]any)
 		}
 
 		// 检查是否包含 __ALL_PROXIES__ 占位符（与 subconverter 行为一致）
@@ -438,7 +535,7 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 
 		if hasPlaceholder {
 			// 构建新的 proxies 列表：占位符之前的元素 + 所有节点
-			var newProxies []interface{}
+			var newProxies []any
 			// 添加占位符之前的元素（组引用如 🔯 故障转移、♻️ 自动选择、DIRECT 等）
 			for j := 0; j < placeholderIndex; j++ {
 				newProxies = append(newProxies, existingProxies[j])
@@ -460,7 +557,7 @@ func DecodeClash(proxys []Proxy, yamlfile string, customGroups ...[]CustomProxyG
 		// 如果已有 proxies（组引用如 🚀 节点选择、DIRECT 等），保持不变
 		if len(existingProxies) == 0 {
 			// 没有任何 proxies，追加所有节点
-			var validProxies []interface{}
+			var validProxies []any
 			for _, newProxy := range ProxiesNameList {
 				validProxies = append(validProxies, newProxy)
 			}

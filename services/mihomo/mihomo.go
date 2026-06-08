@@ -64,7 +64,7 @@ func GetMihomoAdapter(nodeLink string) (constant.Proxy, error) {
 		return nil, fmt.Errorf("marshal proxy error: %v", err)
 	}
 
-	var proxyMap map[string]interface{}
+	var proxyMap map[string]any
 	err = yaml.Unmarshal(yamlBytes, &proxyMap)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshal proxy map error: %v", err)
@@ -264,13 +264,6 @@ func MihomoSpeedTest(
 	// Calculate latency
 	latency = int(time.Since(start).Milliseconds())
 
-	// Create HTTP request
-	req, err := http.NewRequest("GET", testUrl, nil)
-	if err != nil {
-		return 0, latency, 0, "", nil, fmt.Errorf("create request error: %v", err)
-	}
-	req = req.WithContext(ctx)
-
 	// We need to use the connection to send the request
 	// Better approach: Use http.Client with a custom Transport that uses the proxy adapter.
 
@@ -303,16 +296,21 @@ func MihomoSpeedTest(
 				}
 				return proxyAdapter.DialContext(ctx, md)
 			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- 代理环境下需要兼容自签或中间证书链
 		},
 		Timeout: timeout,
 	}
 
-	resp, err := client.Get(testUrl)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testUrl, nil)
+	if err != nil {
+		return 0, latency, 0, "", nil, fmt.Errorf("create request error: %v", err)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, latency, 0, "", nil, fmt.Errorf("http get error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Read body to measure speed
 	// We can read up to N bytes or until EOF
@@ -436,6 +434,7 @@ func fetchLandingIPWithAdapter(proxyAdapter constant.Proxy, ipUrl string) string
 	// Recover from any panics
 	defer func() {
 		if r := recover(); r != nil {
+			_ = r
 			// 静默处理，不影响主流程
 		}
 	}()
@@ -470,7 +469,7 @@ func fetchLandingIPWithAdapter(proxyAdapter constant.Proxy, ipUrl string) string
 				}
 				return proxyAdapter.DialContext(dialCtx, md)
 			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- 代理环境下需要兼容自签或中间证书链
 		},
 		Timeout: 3 * time.Second,
 	}
@@ -486,7 +485,7 @@ func fetchLandingIPWithAdapter(proxyAdapter constant.Proxy, ipUrl string) string
 		utils.Error("落地IP检测: 请求失败: %v (URL: %s)", err, ipUrl)
 		return ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 限制读取最多64字节（IP地址不会超过这个长度）
 	body := make([]byte, 64)
@@ -528,7 +527,7 @@ func fetchQuality(proxyAdapter constant.Proxy, qualityURL string) *QualityCheckR
 				}
 				return proxyAdapter.DialContext(dialCtx, md)
 			},
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- 代理环境下需要兼容自签或中间证书链
 		},
 		Timeout: 5 * time.Second,
 	}
@@ -544,7 +543,7 @@ func fetchQuality(proxyAdapter constant.Proxy, qualityURL string) *QualityCheckR
 		utils.Debug("节点质量检测: 请求失败: %v", err)
 		return &QualityCheckResult{Status: models.QualityStatusFailed, Reason: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		utils.Debug("节点质量检测: 响应状态异常: %d", resp.StatusCode)
@@ -610,6 +609,7 @@ func fetchQuality(proxyAdapter constant.Proxy, qualityURL string) *QualityCheckR
 func FetchQualityWithAdapter(proxyAdapter constant.Proxy, qualityURL string) *QualityCheckResult {
 	defer func() {
 		if r := recover(); r != nil {
+			_ = r
 			// 静默处理
 		}
 	}()

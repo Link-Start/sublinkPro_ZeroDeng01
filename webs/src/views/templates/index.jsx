@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 // material-ui
@@ -33,7 +34,6 @@ import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
 import Autocomplete from '@mui/material/Autocomplete';
 import Switch from '@mui/material/Switch';
-import InputAdornment from '@mui/material/InputAdornment';
 
 // icons
 import AddIcon from '@mui/icons-material/Add';
@@ -63,13 +63,12 @@ import {
   convertRules,
   generateTemplateAICandidateStream
 } from 'api/templates';
-import { getBaseTemplates, updateBaseTemplate } from 'api/settings';
+import { getAISettings, getBaseTemplates, updateBaseTemplate } from 'api/settings';
 import { getNodes } from 'api/nodes';
+import { withAlpha } from 'utils/colorUtils';
 
 // Monaco Editor
 import Editor, { DiffEditor } from '@monaco-editor/react';
-
-// ==============================|| 模板管理 ||============================== //
 
 const createEmptyTemplateAIAssistant = () => ({
   summary: '',
@@ -100,6 +99,11 @@ const JSON_ESCAPE_CHAR_MAP = {
   r: '\r',
   t: '\t'
 };
+
+const AI_SETUP_ERROR_MARKERS = [
+  'AI \u52a9\u624b\u672a\u542f\u7528',
+  'AI \u8bbe\u7f6e\u4e0d\u5b8c\u6574\uff0c\u8bf7\u5148\u914d\u7f6e Base URL\u3001\u6a21\u578b\u548c API Key'
+];
 
 const createTemplateAISourceSnapshot = (formData, useProxy, proxyLink) => ({
   sourceText: formData.text,
@@ -170,7 +174,7 @@ const getUsageNumber = (container, key) => {
   return null;
 };
 
-const buildTemplateAIUsageItems = (usage) => {
+const buildTemplateAIUsageItems = (usage, t) => {
   if (!usage || typeof usage !== 'object' || Array.isArray(usage)) {
     return [];
   }
@@ -188,9 +192,9 @@ const buildTemplateAIUsageItems = (usage) => {
     getUsageNumber(usage, 'cached_input_tokens');
 
   return [
-    inputTokens !== null ? { key: 'input', label: '输入', value: inputTokens } : null,
-    outputTokens !== null ? { key: 'output', label: '输出', value: outputTokens } : null,
-    cacheTokens !== null ? { key: 'cache', label: '缓存', value: cacheTokens } : null
+    inputTokens !== null ? { key: 'input', label: t('templates.ai.usage.input'), value: inputTokens } : null,
+    outputTokens !== null ? { key: 'output', label: t('templates.ai.usage.output'), value: outputTokens } : null,
+    cacheTokens !== null ? { key: 'cache', label: t('templates.ai.usage.cache'), value: cacheTokens } : null
   ].filter(Boolean);
 };
 
@@ -246,7 +250,14 @@ const extractCandidatePreviewFromStream = (streamBuffer) => {
 };
 
 export default function TemplateList() {
+  const { t } = useTranslation();
   const theme = useTheme();
+  const palette = theme.vars?.palette || theme.palette;
+  const isDark = theme.palette.mode === 'dark';
+  const aiPromptPrimaryLight = theme.palette.primary.light;
+  const aiPromptPrimaryMain = theme.palette.primary.main;
+  const aiPromptSurface = theme.palette.grey[900];
+  const aiPromptCollapsedSurface = theme.palette.grey[800];
   const navigate = useNavigate();
   const matchDownMd = useMediaQuery(theme.breakpoints.down('md'));
   const aiGenerationAbortRef = useRef(null);
@@ -268,6 +279,9 @@ export default function TemplateList() {
   const [aiAssistant, setAIAssistant] = useState(createEmptyTemplateAIAssistant);
   const [aiGenerationError, setAIGenerationError] = useState('');
   const [aiLocalAcceptSnapshot, setAILocalAcceptSnapshot] = useState(null);
+  const [isAIEnabled, setIsAIEnabled] = useState(false);
+  const [aiCommandOpen, setAICommandOpen] = useState(false);
+  const [aiDisabledPromptOpen, setAIDisabledPromptOpen] = useState(false);
   const [errorDialog, setErrorDialog] = useState({ open: false, title: '', message: '' });
   const [usageDialog, setUsageDialog] = useState({ open: false, title: '', message: '', subscriptions: [], action: null });
   const [page, setPage] = useState(0);
@@ -277,7 +291,6 @@ export default function TemplateList() {
   });
   const [totalItems, setTotalItems] = useState(0);
 
-  // 确认对话框
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmInfo, setConfirmInfo] = useState({
     title: '',
@@ -285,14 +298,12 @@ export default function TemplateList() {
     action: null
   });
 
-  // 基础模板编辑对话框
   const [baseTemplateDialogOpen, setBaseTemplateDialogOpen] = useState(false);
   const [baseTemplateCategory, setBaseTemplateCategory] = useState('clash');
   const [baseTemplateContent, setBaseTemplateContent] = useState('');
   const [baseTemplateLoading, setBaseTemplateLoading] = useState(false);
   const [baseTemplateSaving, setBaseTemplateSaving] = useState(false);
 
-  // 代理设置
   const [useProxy, setUseProxy] = useState(false);
   const [proxyLink, setProxyLink] = useState('');
   const [proxyNodeOptions, setProxyNodeOptions] = useState([]);
@@ -315,6 +326,7 @@ export default function TemplateList() {
     abortAIGeneration();
     setTemplateEditorMode('edit');
     setAIPrompt('');
+    setAICommandOpen(false);
     setAIAssistant(createEmptyTemplateAIAssistant());
     setAIGenerationError('');
     setAIGenerating(false);
@@ -336,18 +348,16 @@ export default function TemplateList() {
     setLoading(true);
     try {
       const response = await getTemplates({ page: currentPage + 1, pageSize: currentPageSize });
-      // 处理分页响应
       if (response.data && response.data.items !== undefined) {
         setTemplates(response.data.items || []);
         setTotalItems(response.data.total || 0);
       } else {
-        // 向后兼容：老格式直接返回数组
         setTemplates(response.data || []);
         setTotalItems((response.data || []).length);
       }
     } catch (error) {
       console.log(error);
-      showMessage(error.message || '获取模板列表失败', 'error');
+      showMessage(error.message || t('templates.messages.loadFailed'), 'error');
     } finally {
       setLoading(false);
     }
@@ -359,14 +369,18 @@ export default function TemplateList() {
 
   useEffect(() => {
     fetchTemplates(0, rowsPerPage);
-    // 获取 ACL4SSR 预设列表
+    getAISettings()
+      .then((res) => {
+        setIsAIEnabled(Boolean(res.data?.enabled));
+      })
+      .catch((err) => console.log('Failed to load AI settings:', err));
     getACL4SSRPresets()
       .then((res) => {
         if (res.data) {
           setAclPresets(res.data);
         }
       })
-      .catch((err) => console.log('获取预设列表失败:', err));
+      .catch((err) => console.log('Failed to load preset list:', err));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const showMessage = (message, severity = 'success') => {
@@ -395,10 +409,8 @@ export default function TemplateList() {
       ruleSource: template.ruleSource || '',
       enableIncludeAll: template.enableIncludeAll || false
     });
-    // 从模板数据加载代理设置
     setUseProxy(template.useProxy || false);
     setProxyLink(template.proxyLink || '');
-    // 如果之前保存了使用代理，预加载节点列表
     if (template.useProxy) {
       fetchProxyNodes();
     }
@@ -414,33 +426,33 @@ export default function TemplateList() {
       usedSubscriptions = response.data?.subscriptions || [];
     } catch (error) {
       console.log(error);
-      showMessage(error.message || '获取模板使用情况失败', 'error');
+      showMessage(error.message || t('templates.messages.usageFailed'), 'error');
       return;
     }
 
     const deleteAction = async () => {
       try {
         await deleteTemplate({ filename: template.file });
-        showMessage('删除成功');
+        showMessage(t('templates.messages.deleteSuccess'));
         fetchTemplates(page, rowsPerPage);
       } catch (error) {
         console.log(error);
-        showMessage(error.message || '删除失败', 'error');
+        showMessage(error.message || t('templates.messages.deleteFailed'), 'error');
       }
     };
 
     if (usedSubscriptions.length > 0) {
       setUsageDialog({
         open: true,
-        title: '模板正在被订阅使用',
-        message: `模板 "${template.file}" 当前正被以下订阅使用，删除后这些订阅可能受到影响，是否继续删除？`,
+        title: t('templates.usage.title'),
+        message: t('templates.usage.message', { name: template.file }),
         subscriptions: usedSubscriptions,
         action: deleteAction
       });
       return;
     }
 
-    openConfirm('删除模板', `确定要删除模板 "${template.file}" 吗？`, deleteAction);
+    openConfirm(t('templates.delete.title'), t('templates.delete.confirm', { name: template.file }), deleteAction);
   };
 
   const handleCloseDialog = () => {
@@ -453,7 +465,7 @@ export default function TemplateList() {
 
   const handleGenerateWithAI = async () => {
     if (!aiPrompt.trim()) {
-      showMessage('请输入 AI 指令', 'warning');
+      showMessage(t('templates.ai.messages.promptRequired'), 'warning');
       return;
     }
 
@@ -533,20 +545,19 @@ export default function TemplateList() {
 
       if (finalAssistantState.candidateText) {
         setTemplateEditorMode('diff');
-        showMessage('AI 草稿已生成，可切换并停留在并排对比模式');
+        showMessage(t('templates.ai.messages.generated'));
       } else {
-        showMessage('AI 生成完成，但未返回候选内容', 'warning');
+        showMessage(t('templates.ai.messages.emptyCandidate'), 'warning');
       }
     } catch (error) {
       if (error.name === 'AbortError') {
         return;
       }
 
-      const errorMessage = error.response?.data?.message || error.message || 'AI 生成失败';
-      const friendlyErrorMessage =
-        errorMessage.includes('当前用户未启用 AI 助手') || errorMessage.includes('AI 设置不完整，请先配置 Base URL、模型和 API Key')
-          ? 'AI 助手当前不可用，请前往 /settings，在 个人设置 -> AI 助手 中完成配置。'
-          : errorMessage;
+      const errorMessage = error.response?.data?.message || error.message || t('templates.ai.messages.generateFailed');
+      const friendlyErrorMessage = AI_SETUP_ERROR_MARKERS.some((marker) => errorMessage.includes(marker))
+        ? t('templates.ai.messages.setupUnavailable')
+        : errorMessage;
       setAIGenerationError(errorMessage);
       showMessage(friendlyErrorMessage, 'error');
     } finally {
@@ -576,24 +587,24 @@ export default function TemplateList() {
   const canSwitchToDiffMode = canReviewAICandidate;
 
   useEffect(() => {
-    if (templateEditorMode === 'diff' && !canSwitchToDiffMode) {
+    if (templateEditorMode === 'diff' && (!canSwitchToDiffMode || !isAIEnabled)) {
       setTemplateEditorMode('edit');
     }
-  }, [templateEditorMode, canSwitchToDiffMode]);
+  }, [templateEditorMode, canSwitchToDiffMode, isAIEnabled]);
 
   const handleAcceptAICandidateLocally = () => {
     if (!aiAssistant.candidateText) {
-      showMessage('请先生成 AI 候选内容', 'warning');
+      showMessage(t('templates.ai.messages.generateFirst'), 'warning');
       return;
     }
 
     if (aiCandidateMatchesEditor) {
-      showMessage('当前编辑器内容已经与 AI 候选结果一致', 'info');
+      showMessage(t('templates.ai.messages.alreadyApplied'), 'info');
       return;
     }
 
     if (aiCandidateOutdated) {
-      showMessage('模板内容或配置已变化，请重新生成或重新校验候选内容后再接受到编辑器', 'warning');
+      showMessage(t('templates.ai.messages.outdatedAccept'), 'warning');
       return;
     }
 
@@ -603,12 +614,12 @@ export default function TemplateList() {
       ...prev,
       text: aiAssistant.candidateText
     }));
-    showMessage('AI 草稿已写入编辑器，可继续编辑或直接保存');
+    showMessage(t('templates.ai.messages.accepted'));
   };
 
   const handleRevertLastLocalAIAccept = () => {
     if (!aiLocalAcceptSnapshot) {
-      showMessage('没有可回退的本地接受记录', 'warning');
+      showMessage(t('templates.ai.messages.noRevert'), 'warning');
       return;
     }
 
@@ -618,7 +629,7 @@ export default function TemplateList() {
     }));
     setTemplateEditorMode('edit');
     setAILocalAcceptSnapshot(null);
-    showMessage('已恢复最近一次接受 AI 候选前的编辑器内容');
+    showMessage(t('templates.ai.messages.reverted'));
   };
 
   const handleConvertTemplate = async (expand) => {
@@ -635,20 +646,20 @@ export default function TemplateList() {
       });
       if (res.code === 200 && res.data && res.data.content) {
         setFormData({ ...formData, text: res.data.content });
-        showMessage(expand ? '规则生成/转换并展开成功' : '规则生成/转换成功');
+        showMessage(expand ? t('templates.messages.convertExpandSuccess') : t('templates.messages.convertSuccess'));
       } else {
         setErrorDialog({
           open: true,
-          title: '规则生成/转换失败',
-          message: res.msg || '生成/转换过程中发生错误'
+          title: t('templates.messages.convertFailed'),
+          message: res.msg || t('templates.messages.convertError')
         });
       }
     } catch (error) {
       console.error(error);
-      const errorMsg = error.response?.data?.msg || error.message || '规则生成/转换失败';
+      const errorMsg = error.response?.data?.msg || error.message || t('templates.messages.convertFailed');
       setErrorDialog({
         open: true,
-        title: '规则生成/转换失败',
+        title: t('templates.messages.convertFailed'),
         message: errorMsg
       });
     } finally {
@@ -659,7 +670,7 @@ export default function TemplateList() {
   const handleSubmit = async () => {
     try {
       if (templateEditorMode === 'diff') {
-        showMessage('当前处于 AI 对比模式，请先返回编辑模式后再保存', 'warning');
+        showMessage(t('templates.ai.messages.diffSaveBlocked'), 'warning');
         return;
       }
 
@@ -674,7 +685,7 @@ export default function TemplateList() {
           proxyLink: proxyLink,
           enableIncludeAll: formData.enableIncludeAll
         });
-        showMessage('更新成功');
+        showMessage(t('templates.messages.updateSuccess'));
       } else {
         await addTemplate({
           filename: formData.filename,
@@ -685,7 +696,7 @@ export default function TemplateList() {
           proxyLink: proxyLink,
           enableIncludeAll: formData.enableIncludeAll
         });
-        showMessage('添加成功');
+        showMessage(t('templates.messages.addSuccess'));
       }
       setEditorFullscreen(false);
       setDialogOpen(false);
@@ -693,11 +704,10 @@ export default function TemplateList() {
       fetchTemplates(page, rowsPerPage);
     } catch (error) {
       console.log(error);
-      showMessage(error.message || (isEdit ? '更新失败' : '添加失败'), 'error');
+      showMessage(error.message || (isEdit ? t('templates.messages.updateFailed') : t('templates.messages.addFailed')), 'error');
     }
   };
 
-  // 打开基础模板编辑对话框
   const handleOpenBaseTemplate = async (category) => {
     setBaseTemplateCategory(category);
     setBaseTemplateDialogOpen(true);
@@ -710,28 +720,26 @@ export default function TemplateList() {
       }
     } catch (error) {
       console.error(error);
-      showMessage(error.message || '获取基础模板失败', 'error');
+      showMessage(error.message || t('templates.messages.baseTemplateLoadFailed'), 'error');
     } finally {
       setBaseTemplateLoading(false);
     }
   };
 
-  // 保存基础模板
   const handleSaveBaseTemplate = async () => {
     setBaseTemplateSaving(true);
     try {
       await updateBaseTemplate(baseTemplateCategory, baseTemplateContent);
-      showMessage(`${baseTemplateCategory === 'clash' ? 'Clash' : 'Surge'} 基础模板保存成功`);
+      showMessage(t('templates.messages.baseTemplateSaveSuccess', { category: baseTemplateCategory === 'clash' ? 'Clash' : 'Surge' }));
       setBaseTemplateDialogOpen(false);
     } catch (error) {
       console.error(error);
-      showMessage(error.message || '保存基础模板失败', 'error');
+      showMessage(error.message || t('templates.messages.baseTemplateSaveFailed'), 'error');
     } finally {
       setBaseTemplateSaving(false);
     }
   };
 
-  // 获取代理节点列表
   const fetchProxyNodes = async () => {
     setLoadingProxyNodes(true);
     try {
@@ -741,20 +749,18 @@ export default function TemplateList() {
         setProxyNodeOptions(items);
       }
     } catch (error) {
-      console.error('获取代理节点失败:', error);
+      console.error('Failed to load proxy nodes:', error);
     } finally {
       setLoadingProxyNodes(false);
     }
   };
 
-  const compactOutlinedFieldSx = {
-    '& .MuiInputLabel-root': {
+  const outlinedLabelFixSx = {
+    '& .MuiInputLabel-shrink': {
       px: 0.5,
       backgroundColor: 'background.paper',
-      maxWidth: 'calc(100% - 24px)'
-    },
-    '& .MuiInputLabel-shrink': {
-      maxWidth: 'calc(133% - 32px)'
+      lineHeight: 1.35,
+      transform: 'translate(14px, -4px) scale(0.75)'
     }
   };
 
@@ -768,22 +774,22 @@ export default function TemplateList() {
   const isEditMode = templateEditorMode === 'edit';
 
   const aiStatusText = aiGenerating
-    ? '正在基于当前编辑器内容生成草稿。'
+    ? t('templates.ai.status.generating')
     : aiGenerationError
       ? aiGenerationError
       : aiCandidateOutdated
-        ? '当前内容或配置已变化，请重新生成新的草稿。'
+        ? t('templates.ai.status.outdated')
         : !isEdit && aiAssistant.candidateText
-          ? '当前模板尚未保存，可先应用到编辑器后再保存。'
+          ? t('templates.ai.status.unsavedTemplate')
           : showDiffReview
-            ? '对比模式为只读，保存前请先返回编辑模式。'
+            ? t('templates.ai.status.diffReadonly')
             : aiCandidateMatchesEditor
-              ? '当前编辑器已载入 AI 草稿。'
+              ? t('templates.ai.status.applied')
               : canRevertLocalAIAccept
-                ? '已保留应用前快照，可在编辑模式下回退。'
+                ? t('templates.ai.status.revertAvailable')
                 : aiAssistant.candidateText
-                  ? '可对比、应用或继续编辑当前候选草稿。'
-                  : '输入指令后生成候选草稿。';
+                  ? t('templates.ai.status.ready')
+                  : t('templates.ai.status.prompt');
   const aiStatusColor = aiGenerationError
     ? 'error.main'
     : aiCandidateOutdated
@@ -793,11 +799,10 @@ export default function TemplateList() {
         : aiCandidateMatchesEditor
           ? 'success.main'
           : alpha(theme.palette.common.white, 0.88);
-  const isAISetupIssue =
-    aiGenerationError.includes('当前用户未启用 AI 助手') || aiGenerationError.includes('AI 设置不完整，请先配置 Base URL、模型和 API Key');
-  const aiSetupGuidanceText = isAISetupIssue ? '请前往 /settings，在 个人设置 -> AI 助手 中启用并完成配置。' : '';
-  const aiFriendlyGenerationError = isAISetupIssue ? 'AI 助手当前不可用。' : aiGenerationError;
-  const aiUsageItems = buildTemplateAIUsageItems(aiAssistant.usage);
+  const isAISetupIssue = AI_SETUP_ERROR_MARKERS.some((marker) => aiGenerationError.includes(marker));
+  const aiSetupGuidanceText = isAISetupIssue ? t('templates.ai.setupGuidance') : '';
+  const aiFriendlyGenerationError = isAISetupIssue ? t('templates.ai.setupUnavailable') : aiGenerationError;
+  const aiUsageItems = buildTemplateAIUsageItems(aiAssistant.usage, t);
 
   const configureTemplateMonacoTheme = (monaco) => {
     monaco.editor.defineTheme('template-ai-editor', {
@@ -815,7 +820,7 @@ export default function TemplateList() {
       <Chip
         size="small"
         variant="filled"
-        label={isEditMode ? '编辑' : '对比'}
+        label={isEditMode ? t('templates.ai.mode.edit') : t('templates.ai.mode.diff')}
         color={isEditMode ? 'primary' : 'default'}
         sx={{
           color: 'common.white',
@@ -825,7 +830,15 @@ export default function TemplateList() {
           }
         }}
       />
-      {aiGenerating ? <Chip size="small" variant="outlined" color="primary" label="生成中" sx={{ color: 'common.white' }} /> : null}
+      {aiGenerating ? (
+        <Chip
+          size="small"
+          variant="outlined"
+          color="primary"
+          label={t('templates.ai.statusChip.generating')}
+          sx={{ color: 'common.white' }}
+        />
+      ) : null}
       {!aiGenerating ? (
         <Chip
           size="small"
@@ -843,14 +856,14 @@ export default function TemplateList() {
           }
           label={
             aiGenerationError
-              ? '生成失败'
+              ? t('templates.ai.statusChip.failed')
               : aiCandidateOutdated
-                ? '草稿过期'
+                ? t('templates.ai.statusChip.outdated')
                 : aiCandidateMatchesEditor
-                  ? '已写入编辑器'
+                  ? t('templates.ai.statusChip.applied')
                   : aiAssistant.candidateText
-                    ? '草稿可用'
-                    : '未生成'
+                    ? t('templates.ai.statusChip.ready')
+                    : t('templates.ai.statusChip.notGenerated')
           }
           sx={{
             color:
@@ -865,13 +878,13 @@ export default function TemplateList() {
         />
       ) : null}
       {canRevertLocalAIAccept ? (
-        <Chip size="small" variant="outlined" color="info" label="可回退上次接受" sx={{ color: 'common.white' }} />
+        <Chip size="small" variant="outlined" color="info" label={t('templates.ai.statusChip.canRevert')} sx={{ color: 'common.white' }} />
       ) : null}
       {!isEdit && aiAssistant.candidateText ? (
         <Chip
           size="small"
           variant="outlined"
-          label="未保存模板"
+          label={t('templates.ai.statusChip.unsavedTemplate')}
           sx={{ color: 'common.white', borderColor: alpha(theme.palette.common.white, 0.22) }}
         />
       ) : null}
@@ -879,6 +892,7 @@ export default function TemplateList() {
   );
 
   const renderAIControlPanel = ({ compact = false, minimal = false } = {}) => {
+    if (!isAIEnabled) return null;
     const dense = compact || minimal;
 
     return (
@@ -921,7 +935,7 @@ export default function TemplateList() {
                   })
             }}
           >
-            编辑
+            {t('templates.ai.mode.edit')}
           </Button>
           <Divider orientation="vertical" flexItem />
           <Button
@@ -942,181 +956,253 @@ export default function TemplateList() {
                   })
             }}
           >
-            对比
+            {t('templates.ai.mode.diff')}
           </Button>
         </Box>
       </Box>
     );
   };
 
-  const renderAIFloatingCommandBar = ({ fullscreen = false } = {}) => (
-    <Box
-      sx={{
-        position: 'absolute',
-        top: fullscreen ? 18 : 12,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        width: {
-          xs: 'calc(100% - 32px)',
-          sm: fullscreen ? 'min(560px, calc(100% - 84px))' : 'min(500px, calc(100% - 64px))'
-        },
-        maxWidth: '100%',
-        zIndex: 6,
-        display: 'flex',
-        justifyContent: 'center'
-      }}
-    >
+  const renderAIFloatingCommandBar = ({ fullscreen = false } = {}) => {
+    if (!isAIEnabled) return null;
+    return (
       <Box
         sx={{
+          position: 'absolute',
+          top: fullscreen ? 18 : 12,
+          left: '50%',
+          transform: 'translateX(-50%)',
           width: '100%',
+          maxWidth: '100%',
+          zIndex: 6,
           display: 'flex',
-          alignItems: 'center',
-          gap: 0.75,
-          px: 0.75,
-          py: 0.5,
-          borderRadius: 1,
-          border: 1,
-          borderColor: alpha(theme.palette.common.white, 0.12),
-          bgcolor: alpha(theme.palette.grey[900], 0.82),
-          boxShadow: `0 10px 26px ${alpha(theme.palette.common.black, 0.24)}`,
-          backdropFilter: 'blur(10px)'
+          justifyContent: 'center'
         }}
       >
-        <TextField
-          fullWidth
-          size="small"
-          value={aiPrompt}
-          onChange={(e) => setAIPrompt(e.target.value)}
-          disabled={aiGenerating}
-          placeholder="告诉 AI 要如何调整当前模板…"
-          inputProps={{ 'aria-label': 'AI 指令' }}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <AutoAwesomeIcon fontSize="small" sx={{ color: alpha(theme.palette.common.white, 0.92) }} />
-              </InputAdornment>
-            )
-          }}
+        <Box
+          role={aiCommandOpen ? undefined : 'button'}
+          tabIndex={aiCommandOpen ? undefined : 0}
+          aria-label={aiCommandOpen ? undefined : t('templates.ai.aria.expandCommand')}
+          onClick={aiCommandOpen ? undefined : () => setAICommandOpen(true)}
+          onKeyDown={
+            aiCommandOpen
+              ? undefined
+              : (event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setAICommandOpen(true);
+                  }
+                }
+          }
           sx={{
-            '& .MuiOutlinedInput-root': {
-              bgcolor: 'transparent',
-              color: alpha(theme.palette.common.white, 0.96),
-              height: 34,
-              pr: 0.25,
-              '&.Mui-disabled': {
-                color: alpha(theme.palette.common.white, 0.72),
-                WebkitTextFillColor: alpha(theme.palette.common.white, 0.72)
-              },
-              '& fieldset': {
-                borderColor: 'transparent'
-              },
-              '&:hover fieldset': {
-                borderColor: 'transparent'
-              },
-              '&.Mui-focused fieldset': {
-                borderColor: alpha(theme.palette.primary.main, 0.6)
+            width: aiCommandOpen
+              ? {
+                  xs: 'calc(100% - 32px)',
+                  sm: fullscreen ? 'min(560px, calc(100% - 84px))' : 'min(500px, calc(100% - 64px))'
+                }
+              : 38,
+            minHeight: 38,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.75,
+            px: aiCommandOpen ? 0.75 : 0,
+            py: aiCommandOpen ? 0.5 : 0,
+            justifyContent: aiCommandOpen ? 'flex-start' : 'center',
+            borderRadius: 999,
+            border: 1,
+            borderColor: alpha(aiPromptPrimaryLight, aiCommandOpen ? 0.34 : 0.42),
+            bgcolor: alpha(aiCommandOpen ? aiPromptSurface : aiPromptCollapsedSurface, aiCommandOpen ? 0.82 : 0.72),
+            boxShadow: `0 ${aiCommandOpen ? 10 : 8}px ${aiCommandOpen ? 26 : 20}px ${alpha(theme.palette.common.black, aiCommandOpen ? 0.24 : 0.18)}`,
+            backdropFilter: 'blur(10px)',
+            overflow: 'hidden',
+            cursor: aiCommandOpen ? 'default' : 'pointer',
+            transition: theme.transitions.create(
+              ['width', 'min-height', 'padding', 'border-radius', 'background-color', 'border-color', 'box-shadow'],
+              {
+                duration: theme.transitions.duration.shorter,
+                easing: theme.transitions.easing.easeOut
               }
-            },
-            '& .MuiInputBase-input': {
-              color: alpha(theme.palette.common.white, 0.96),
-              paddingLeft: 2
-            },
-            '& .MuiInputBase-input.Mui-disabled': {
-              WebkitTextFillColor: alpha(theme.palette.common.white, 0.72)
-            },
-            '& .MuiInputBase-input::placeholder': {
-              color: alpha(theme.palette.common.white, 0.64),
-              opacity: 1
-            },
-            '& .MuiInputAdornment-root': {
-              mr: 0.75,
-              color: alpha(theme.palette.common.white, 0.88)
-            }
-          }}
-        />
-        <Button
-          variant="contained"
-          size="small"
-          startIcon={aiGenerating ? <CircularProgress size={16} sx={{ color: 'common.white' }} /> : <AutoAwesomeIcon />}
-          disabled={aiGenerating}
-          onClick={handleGenerateWithAI}
-          sx={{
-            flexShrink: 0,
-            minWidth: 92,
-            color: 'common.white',
-            boxShadow: 'none',
-            '&.Mui-disabled': {
-              color: 'common.white',
-              bgcolor: alpha(theme.palette.primary.main, 0.5)
+            ),
+            '&:hover': aiCommandOpen
+              ? undefined
+              : {
+                  borderColor: alpha(aiPromptPrimaryMain, 0.62),
+                  bgcolor: alpha(aiPromptSurface, 0.9),
+                  boxShadow: `0 12px 28px ${alpha(aiPromptPrimaryMain, 0.18)}`
+                },
+            '&:focus-visible': {
+              outline: `2px solid ${alpha(aiPromptPrimaryLight, 0.68)}`,
+              outlineOffset: 3
             }
           }}
         >
-          {aiGenerating ? '生成中' : '生成'}
-        </Button>
-        <IconButton
-          size="small"
-          disabled={!canAcceptAICandidateLocally || aiGenerating}
-          onClick={handleAcceptAICandidateLocally}
-          sx={{
-            flexShrink: 0,
-            borderRadius: 1,
-            bgcolor: alpha(theme.palette.common.white, 0.06),
-            color:
-              canAcceptAICandidateLocally && !aiGenerating
-                ? alpha(theme.palette.common.white, 0.96)
-                : alpha(theme.palette.common.white, 0.42),
-            '&.Mui-disabled': {
-              bgcolor: alpha(theme.palette.common.white, 0.04),
-              color: alpha(theme.palette.common.white, 0.34)
-            }
-          }}
-        >
-          <CheckIcon fontSize="small" />
-        </IconButton>
-        {isEditMode ? (
           <IconButton
+            component={aiCommandOpen ? 'button' : 'div'}
             size="small"
-            disabled={!canRevertLocalAIAccept || aiGenerating}
-            onClick={handleRevertLastLocalAIAccept}
+            aria-label={aiCommandOpen ? t('templates.ai.aria.collapseCommand') : undefined}
+            onClick={
+              aiCommandOpen
+                ? (e) => {
+                    e.stopPropagation();
+                    setAICommandOpen(false);
+                  }
+                : undefined
+            }
+            disabled={aiCommandOpen && aiGenerating}
+            disableRipple={!aiCommandOpen}
             sx={{
+              width: aiCommandOpen ? 32 : 36,
+              height: aiCommandOpen ? 32 : 36,
               flexShrink: 0,
-              borderRadius: 1,
-              bgcolor: alpha(theme.palette.common.white, 0.06),
-              color:
-                canRevertLocalAIAccept && !aiGenerating ? alpha(theme.palette.common.white, 0.92) : alpha(theme.palette.common.white, 0.4),
+              color: aiCommandOpen ? alpha(theme.palette.common.white, aiGenerating ? 0.48 : 0.94) : alpha(aiPromptPrimaryLight, 0.95),
+              transition: theme.transitions.create(['width', 'height', 'color', 'background-color']),
+              '&:hover': aiCommandOpen
+                ? {
+                    bgcolor: alpha(theme.palette.common.white, 0.08)
+                  }
+                : {
+                    bgcolor: 'transparent'
+                  },
               '&.Mui-disabled': {
-                bgcolor: alpha(theme.palette.common.white, 0.04),
-                color: alpha(theme.palette.common.white, 0.32)
+                color: alpha(theme.palette.common.white, 0.42)
               }
             }}
           >
-            <UndoIcon fontSize="small" />
+            <AutoAwesomeIcon fontSize="small" />
           </IconButton>
-        ) : null}
-        {isAISetupIssue ? (
-          <Button
-            size="small"
-            variant="text"
-            disabled={aiGenerating}
-            onClick={() => navigate('/settings')}
-            sx={{
-              flexShrink: 0,
-              minWidth: 'auto',
-              px: 0.75,
-              color: alpha(theme.palette.common.white, 0.92),
-              textDecoration: 'underline',
-              textUnderlineOffset: '2px',
-              '&.Mui-disabled': {
-                color: alpha(theme.palette.common.white, 0.5)
-              }
-            }}
-          >
-            前往设置
-          </Button>
-        ) : null}
+          {aiCommandOpen ? (
+            <>
+              <TextField
+                fullWidth
+                size="small"
+                value={aiPrompt}
+                onChange={(e) => setAIPrompt(e.target.value)}
+                disabled={aiGenerating}
+                placeholder={t('templates.ai.promptPlaceholder')}
+                inputProps={{ 'aria-label': t('templates.ai.promptAria') }}
+                sx={{
+                  minWidth: 0,
+                  '& .MuiOutlinedInput-root': {
+                    bgcolor: 'transparent',
+                    color: alpha(theme.palette.common.white, 0.96),
+                    height: 34,
+                    pr: 0.25,
+                    borderRadius: 999,
+                    '&.Mui-disabled': {
+                      color: alpha(theme.palette.common.white, 0.72),
+                      WebkitTextFillColor: alpha(theme.palette.common.white, 0.72)
+                    },
+                    '& fieldset': {
+                      borderColor: 'transparent'
+                    },
+                    '&:hover fieldset': {
+                      borderColor: 'transparent'
+                    },
+                    '&.Mui-focused fieldset': {
+                      borderColor: alpha(theme.palette.primary.main, 0.6)
+                    }
+                  },
+                  '& .MuiInputBase-input': {
+                    color: alpha(theme.palette.common.white, 0.96)
+                  },
+                  '& .MuiInputBase-input.Mui-disabled': {
+                    WebkitTextFillColor: alpha(theme.palette.common.white, 0.72)
+                  },
+                  '& .MuiInputBase-input::placeholder': {
+                    color: alpha(theme.palette.common.white, 0.64),
+                    opacity: 1
+                  }
+                }}
+              />
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={aiGenerating ? <CircularProgress size={16} sx={{ color: 'common.white' }} /> : <AutoAwesomeIcon />}
+                disabled={aiGenerating}
+                onClick={handleGenerateWithAI}
+                sx={{
+                  flexShrink: 0,
+                  minWidth: 92,
+                  borderRadius: 999,
+                  color: 'common.white',
+                  boxShadow: 'none',
+                  '&.Mui-disabled': {
+                    color: 'common.white',
+                    bgcolor: alpha(theme.palette.primary.main, 0.5)
+                  }
+                }}
+              >
+                {aiGenerating ? t('templates.ai.generating') : t('templates.ai.generate')}
+              </Button>
+              <IconButton
+                size="small"
+                disabled={!canAcceptAICandidateLocally || aiGenerating}
+                onClick={handleAcceptAICandidateLocally}
+                sx={{
+                  flexShrink: 0,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.common.white, 0.06),
+                  color:
+                    canAcceptAICandidateLocally && !aiGenerating
+                      ? alpha(theme.palette.common.white, 0.96)
+                      : alpha(theme.palette.common.white, 0.42),
+                  '&.Mui-disabled': {
+                    bgcolor: alpha(theme.palette.common.white, 0.04),
+                    color: alpha(theme.palette.common.white, 0.34)
+                  }
+                }}
+              >
+                <CheckIcon fontSize="small" />
+              </IconButton>
+              {isEditMode ? (
+                <IconButton
+                  size="small"
+                  disabled={!canRevertLocalAIAccept || aiGenerating}
+                  onClick={handleRevertLastLocalAIAccept}
+                  sx={{
+                    flexShrink: 0,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.common.white, 0.06),
+                    color:
+                      canRevertLocalAIAccept && !aiGenerating
+                        ? alpha(theme.palette.common.white, 0.92)
+                        : alpha(theme.palette.common.white, 0.4),
+                    '&.Mui-disabled': {
+                      bgcolor: alpha(theme.palette.common.white, 0.04),
+                      color: alpha(theme.palette.common.white, 0.32)
+                    }
+                  }}
+                >
+                  <UndoIcon fontSize="small" />
+                </IconButton>
+              ) : null}
+              {isAISetupIssue ? (
+                <Button
+                  size="small"
+                  variant="text"
+                  disabled={aiGenerating}
+                  onClick={() => navigate('/settings?tab=ai')}
+                  sx={{
+                    flexShrink: 0,
+                    minWidth: 'auto',
+                    px: 0.75,
+                    color: alpha(theme.palette.common.white, 0.92),
+                    textDecoration: 'underline',
+                    textUnderlineOffset: '2px',
+                    '&.Mui-disabled': {
+                      color: alpha(theme.palette.common.white, 0.5)
+                    }
+                  }}
+                >
+                  {t('templates.ai.goSettings')}
+                </Button>
+              ) : null}
+            </>
+          ) : null}
+        </Box>
       </Box>
-    </Box>
-  );
+    );
+  };
 
   const renderTemplateEditor = ({ fullscreen = false } = {}) => (
     <Box
@@ -1164,7 +1250,7 @@ export default function TemplateList() {
         >
           <Stack alignItems="center" spacing={1}>
             <CircularProgress />
-            <Typography color="white">正在转换规则...</Typography>
+            <Typography color="white">{t('templates.messages.converting')}</Typography>
           </Stack>
         </Box>
       )}
@@ -1214,86 +1300,195 @@ export default function TemplateList() {
           }}
         />
       )}
-      <Box
-        sx={{
-          position: 'absolute',
-          right: { xs: 24, sm: 32 },
-          bottom: 16,
-          maxWidth: { xs: 'calc(100% - 48px)', sm: 380 },
-          px: 1.25,
-          py: 0.75,
-          borderRadius: 1,
-          bgcolor: alpha(theme.palette.grey[900], 0.76),
-          backdropFilter: 'blur(8px)',
-          border: 1,
-          borderColor: alpha(theme.palette.common.white, 0.12),
-          boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.22)}`,
-          zIndex: 5,
-          pointerEvents: 'none'
-        }}
-      >
-        <Stack spacing={0.75} sx={{ minWidth: 0 }}>
-          {aiStateChips}
-          <Typography
-            variant="caption"
+      {isAIEnabled && aiCommandOpen ? (
+        <Box
+          sx={{
+            position: 'absolute',
+            right: { xs: 24, sm: 32 },
+            bottom: 16,
+            maxWidth: { xs: 'calc(100% - 48px)', sm: 380 },
+            px: 1.25,
+            py: 0.75,
+            borderRadius: 1,
+            bgcolor: alpha(theme.palette.grey[900], 0.76),
+            backdropFilter: 'blur(8px)',
+            border: 1,
+            borderColor: alpha(theme.palette.common.white, 0.12),
+            boxShadow: `0 8px 24px ${alpha(theme.palette.common.black, 0.22)}`,
+            zIndex: 5,
+            pointerEvents: 'none'
+          }}
+        >
+          <Stack spacing={0.75} sx={{ minWidth: 0 }}>
+            {aiStateChips}
+            <Typography
+              variant="caption"
+              sx={{
+                color: aiCandidateMatchesEditor ? 'common.white' : isAISetupIssue ? alpha(theme.palette.common.white, 0.94) : aiStatusColor,
+                display: 'block',
+                lineHeight: 1.45,
+                textShadow: aiCandidateMatchesEditor ? `0 1px 2px ${alpha(theme.palette.common.black, 0.45)}` : 'none'
+              }}
+            >
+              {isAISetupIssue ? aiFriendlyGenerationError : aiStatusText}
+            </Typography>
+            {isAISetupIssue ? (
+              <Typography variant="caption" sx={{ color: alpha(theme.palette.common.white, 0.76), display: 'block', lineHeight: 1.4 }}>
+                {aiSetupGuidanceText}
+              </Typography>
+            ) : null}
+            {aiUsageItems.length > 0 ? (
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                {aiUsageItems.map((item) => (
+                  <Chip
+                    key={item.key}
+                    size="small"
+                    variant="outlined"
+                    label={`${item.label} ${item.value}`}
+                    sx={{
+                      color: alpha(theme.palette.common.white, 0.92),
+                      borderColor: alpha(theme.palette.common.white, 0.18),
+                      bgcolor: alpha(theme.palette.common.white, 0.04),
+                      '& .MuiChip-label': {
+                        px: 1,
+                        fontWeight: 500
+                      }
+                    }}
+                  />
+                ))}
+              </Stack>
+            ) : null}
+          </Stack>
+        </Box>
+      ) : !isAIEnabled ? (
+        <Box
+          sx={{
+            position: 'absolute',
+            right: { xs: 14, sm: 18 },
+            bottom: 16,
+            zIndex: 5,
+            display: 'flex',
+            justifyContent: 'flex-end',
+            maxWidth: { xs: 'calc(100% - 28px)', sm: 320 },
+            pointerEvents: 'auto'
+          }}
+        >
+          <Box
+            component="button"
+            type="button"
+            aria-label={aiDisabledPromptOpen ? t('templates.ai.aria.collapseDisabledPrompt') : t('templates.ai.aria.viewDisabledPrompt')}
+            onClick={() => setAIDisabledPromptOpen((open) => !open)}
             sx={{
-              color: aiCandidateMatchesEditor ? 'common.white' : isAISetupIssue ? alpha(theme.palette.common.white, 0.94) : aiStatusColor,
-              display: 'block',
-              lineHeight: 1.45,
-              textShadow: aiCandidateMatchesEditor ? `0 1px 2px ${alpha(theme.palette.common.black, 0.45)}` : 'none'
+              width: aiDisabledPromptOpen ? { xs: 248, sm: 292 } : 38,
+              minHeight: aiCommandOpen ? 44 : 38,
+              p: 0,
+              border: 1,
+              borderColor: alpha(aiPromptPrimaryLight, aiDisabledPromptOpen ? 0.46 : 0.34),
+              borderRadius: 999,
+              bgcolor: aiDisabledPromptOpen ? alpha(aiPromptSurface, 0.86) : alpha(aiPromptCollapsedSurface, 0.68),
+              color: alpha(theme.palette.common.white, 0.92),
+              backdropFilter: 'blur(10px)',
+              boxShadow: `0 10px 24px ${alpha(theme.palette.common.black, aiDisabledPromptOpen ? 0.28 : 0.18)}`,
+              cursor: 'pointer',
+              overflow: 'hidden',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: aiDisabledPromptOpen ? 'flex-start' : 'center',
+              transition: theme.transitions.create(['width', 'background-color', 'border-color', 'box-shadow', 'transform'], {
+                duration: theme.transitions.duration.shorter,
+                easing: theme.transitions.easing.easeOut
+              }),
+              animation: aiDisabledPromptOpen ? 'none' : 'template-ai-disabled-pulse 2.8s ease-in-out infinite',
+              '@keyframes template-ai-disabled-pulse': {
+                '0%, 100%': { transform: 'scale(1)' },
+                '50%': { transform: 'scale(1.06)' }
+              },
+              '&:hover': {
+                borderColor: alpha(aiPromptPrimaryMain, 0.58),
+                bgcolor: alpha(aiPromptSurface, 0.9),
+                boxShadow: `0 12px 28px ${alpha(aiPromptPrimaryMain, 0.18)}`
+              }
             }}
           >
-            {isAISetupIssue ? aiFriendlyGenerationError : aiStatusText}
-          </Typography>
-          {isAISetupIssue ? (
-            <Typography variant="caption" sx={{ color: alpha(theme.palette.common.white, 0.76), display: 'block', lineHeight: 1.4 }}>
-              {aiSetupGuidanceText}
-            </Typography>
-          ) : null}
-          {aiUsageItems.length > 0 ? (
-            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
-              {aiUsageItems.map((item) => (
-                <Chip
-                  key={item.key}
-                  size="small"
-                  variant="outlined"
-                  label={`${item.label} ${item.value}`}
-                  sx={{
-                    color: alpha(theme.palette.common.white, 0.92),
-                    borderColor: alpha(theme.palette.common.white, 0.18),
-                    bgcolor: alpha(theme.palette.common.white, 0.04),
-                    '& .MuiChip-label': {
-                      px: 1,
-                      fontWeight: 500
-                    }
-                  }}
-                />
-              ))}
+            <Box
+              sx={{
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                color: alpha(aiPromptPrimaryLight, 0.95)
+              }}
+            >
+              <AutoAwesomeIcon fontSize="small" />
+            </Box>
+            <Stack
+              direction="row"
+              spacing={1}
+              alignItems="center"
+              sx={{
+                minWidth: 0,
+                pr: 1.25,
+                opacity: aiDisabledPromptOpen ? 1 : 0,
+                transform: aiDisabledPromptOpen ? 'translateX(0)' : 'translateX(8px)',
+                transition: theme.transitions.create(['opacity', 'transform'], { duration: theme.transitions.duration.shorter }),
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <Typography variant="caption" sx={{ color: alpha(theme.palette.common.white, 0.82) }}>
+                {t('templates.ai.disabled')}
+              </Typography>
+              <Typography
+                component="span"
+                variant="caption"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  navigate('/settings?tab=ai');
+                }}
+                sx={{ color: aiPromptPrimaryLight, fontWeight: 700, textDecoration: 'underline', textUnderlineOffset: 3 }}
+              >
+                {t('templates.ai.goSettingsShort')}
+              </Typography>
             </Stack>
-          ) : null}
-        </Stack>
-      </Box>
+          </Box>
+        </Box>
+      ) : null}
     </Box>
   );
 
+  const getCategoryChipSx = (category) => {
+    const semanticColor = category === 'surge' ? palette.secondary : palette.primary;
+
+    return {
+      bgcolor: withAlpha(semanticColor.main, isDark ? 0.12 : 0.08),
+      color: isDark ? semanticColor.main : semanticColor.dark,
+      borderColor: withAlpha(semanticColor.main, isDark ? 0.28 : 0.22),
+      borderWidth: 1,
+      borderStyle: 'solid',
+      fontWeight: 600
+    };
+  };
+
   return (
     <MainCard
-      title="模板管理"
+      title={t('templates.title')}
       secondary={
         matchDownMd ? (
           <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={handleAdd}>
-            添加
+            {t('common.add')}
           </Button>
         ) : (
           <Stack direction="row" spacing={1}>
             <Button variant="outlined" size="small" onClick={() => handleOpenBaseTemplate('clash')}>
-              Clash 基础模板
+              {t('templates.baseTemplate.button', { category: 'Clash' })}
             </Button>
             <Button variant="outlined" size="small" color="secondary" onClick={() => handleOpenBaseTemplate('surge')}>
-              Surge 基础模板
+              {t('templates.baseTemplate.button', { category: 'Surge' })}
             </Button>
             <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd}>
-              添加模板
+              {t('templates.actions.addTemplate')}
             </Button>
             <IconButton onClick={handleRefresh} disabled={loading}>
               <RefreshIcon
@@ -1359,11 +1554,11 @@ export default function TemplateList() {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>文件名</TableCell>
-                <TableCell>类别</TableCell>
-                <TableCell>规则源</TableCell>
-                <TableCell>创建时间</TableCell>
-                <TableCell align="right">操作</TableCell>
+                <TableCell>{t('templates.fields.filename')}</TableCell>
+                <TableCell>{t('templates.fields.category')}</TableCell>
+                <TableCell>{t('templates.fields.ruleSource')}</TableCell>
+                <TableCell>{t('templates.fields.createdAt')}</TableCell>
+                <TableCell align="right">{t('templates.fields.actions')}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -1375,8 +1570,8 @@ export default function TemplateList() {
                   <TableCell>
                     <Chip
                       label={template.category === 'surge' ? 'Surge' : 'Clash'}
-                      color={template.category === 'surge' ? 'secondary' : 'primary'}
                       size="small"
+                      sx={getCategoryChipSx(template.category)}
                     />
                   </TableCell>
                   <TableCell>
@@ -1418,7 +1613,6 @@ export default function TemplateList() {
         pageSizeOptions={[10, 20, 50, 100]}
       />
 
-      {/* 添加/编辑对话框 */}
       <Dialog
         open={dialogOpen}
         onClose={handleCloseDialog}
@@ -1454,23 +1648,13 @@ export default function TemplateList() {
           }
         >
           <Stack spacing={0.5}>
-            <Typography variant="h4">{isEdit ? '编辑模板' : '添加模板'}</Typography>
-            {editorFullscreen && (
-              <Typography variant="body2" color="textSecondary">
-                全屏模式同样使用编辑 / 对比双模式，避免额外的 AI 侧边工作区。
-              </Typography>
-            )}
+            <Typography variant="h4">{isEdit ? t('templates.dialog.editTitle') : t('templates.dialog.addTitle')}</Typography>
           </Stack>
           {editorFullscreen && (
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="flex-end">
-              <Button size="small" onClick={handleCloseDialog}>
-                取消
-              </Button>
-              <Button variant="contained" size="small" disabled={templateEditorMode === 'diff'} onClick={handleSubmit}>
-                保存
-              </Button>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="flex-end" alignItems="center">
+              {renderAIControlPanel({ compact: true })}
               <Button variant="outlined" size="small" startIcon={<FullscreenExitIcon />} onClick={() => setEditorFullscreen(false)}>
-                退出全屏
+                {t('templates.actions.exitFullscreen')}
               </Button>
             </Stack>
           )}
@@ -1502,216 +1686,24 @@ export default function TemplateList() {
                 : { mt: 0.5 }
             }
           >
-            {editorFullscreen ? (
-              <Stack spacing={1} sx={{ flexShrink: 0 }}>
-                <Box
-                  sx={{
-                    px: 1,
-                    py: 1.25,
-                    border: 1,
-                    borderColor: 'divider',
-                    borderRadius: 1,
-                    bgcolor: 'background.paper'
-                  }}
-                >
-                  <Stack spacing={1.25}>
-                    <Stack direction="row" spacing={1.25} useFlexGap flexWrap="wrap" alignItems={{ xs: 'stretch', lg: 'flex-start' }}>
-                      <TextField
-                        fullWidth
-                        size="small"
-                        label="文件名"
-                        value={formData.filename}
-                        onChange={(e) => setFormData({ ...formData, filename: e.target.value })}
-                        placeholder="例如: clash.yaml"
-                        InputLabelProps={{ shrink: true }}
-                        sx={{
-                          ...compactOutlinedFieldSx,
-                          flex: { xs: '1 1 100%', sm: '1 1 240px', lg: '0 1 220px' },
-                          minWidth: { xs: '100%', sm: 220, lg: 200 }
-                        }}
-                      />
-                      <FormControl
-                        size="small"
-                        sx={{
-                          minWidth: { xs: '100%', sm: 144, lg: 132 },
-                          flex: { xs: '1 1 100%', sm: '0 1 160px', lg: '0 0 132px' }
-                        }}
-                      >
-                        <InputLabel shrink sx={compactOutlinedFieldSx['& .MuiInputLabel-root']}>
-                          类别
-                        </InputLabel>
-                        <Select
-                          value={formData.category}
-                          label="类别"
-                          notched
-                          onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                        >
-                          <MenuItem value="clash">Clash</MenuItem>
-                          <MenuItem value="surge">Surge</MenuItem>
-                        </Select>
-                      </FormControl>
-                      <Autocomplete
-                        freeSolo
-                        options={aclPresets}
-                        sx={{
-                          flex: { xs: '1 1 100%', md: '999 1 320px' },
-                          minWidth: { xs: '100%', md: 280, lg: 320 }
-                        }}
-                        getOptionLabel={(option) => {
-                          if (typeof option === 'string') return option;
-                          return option.label || option.url || '';
-                        }}
-                        isOptionEqualToValue={(option, value) => {
-                          if (typeof value === 'string') {
-                            return option.url === value;
-                          }
-                          return option.url === value?.url;
-                        }}
-                        value={aclPresets.find((preset) => preset.url === formData.ruleSource) || formData.ruleSource}
-                        onChange={(_, newValue) => {
-                          if (typeof newValue === 'string') {
-                            setFormData({ ...formData, ruleSource: newValue });
-                          } else if (newValue && newValue.url) {
-                            setFormData({ ...formData, ruleSource: newValue.url });
-                          } else {
-                            setFormData({ ...formData, ruleSource: '' });
-                          }
-                        }}
-                        onInputChange={(_, newInputValue) => {
-                          setFormData({ ...formData, ruleSource: newInputValue });
-                        }}
-                        renderInput={(params) => (
-                          <TextField
-                            {...params}
-                            size="small"
-                            label="远程规则地址"
-                            placeholder="输入 URL 或选择 ACL4SSR 预设"
-                            InputLabelProps={{ ...params.InputLabelProps, shrink: true }}
-                            sx={compactOutlinedFieldSx}
-                          />
-                        )}
-                        renderOption={(props, option) => (
-                          <li {...props} key={option.name}>
-                            <Stack>
-                              <Typography variant="body2">{option.label}</Typography>
-                              <Typography variant="caption" color="textSecondary" sx={{ fontSize: '0.7rem' }}>
-                                {option.url}
-                              </Typography>
-                            </Stack>
-                          </li>
-                        )}
-                      />
-                    </Stack>
-                    <Stack spacing={0.75}>
-                      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" alignItems="center">
-                        <FormControlLabel
-                          sx={{ mr: 0, flex: { xs: '1 1 100%', md: '0 1 auto' } }}
-                          control={
-                            <Switch
-                              size="small"
-                              checked={useProxy}
-                              onChange={(e) => {
-                                const checked = e.target.checked;
-                                setUseProxy(checked);
-                                if (checked) {
-                                  fetchProxyNodes();
-                                }
-                              }}
-                            />
-                          }
-                          label="使用代理下载远程规则"
-                        />
-                        <FormControlLabel
-                          sx={{ mr: 0, flex: { xs: '1 1 100%', md: '0 1 auto' } }}
-                          control={
-                            <Switch
-                              size="small"
-                              checked={formData.enableIncludeAll}
-                              onChange={(e) => setFormData({ ...formData, enableIncludeAll: e.target.checked })}
-                            />
-                          }
-                          label="使用 Include-All 模式"
-                        />
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          startIcon={converting ? <CircularProgress size={16} /> : <TransformIcon />}
-                          disabled={!formData.ruleSource || converting}
-                          onClick={() => handleConvertTemplate(false)}
-                        >
-                          生成/转换
-                        </Button>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          startIcon={converting ? <CircularProgress size={16} /> : <UnfoldMoreIcon />}
-                          disabled={!formData.ruleSource || converting}
-                          onClick={() => handleConvertTemplate(true)}
-                        >
-                          转换并展开
-                        </Button>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          color="error"
-                          disabled={!formData.text || converting}
-                          onClick={() => {
-                            openConfirm('清空内容', '确定要清空编辑器中的所有内容吗？', () => {
-                              setFormData({ ...formData, text: '' });
-                              showMessage('已清空内容');
-                            });
-                          }}
-                        >
-                          清空
-                        </Button>
-                      </Stack>
-                      <Typography variant="caption" color="text.secondary">
-                        全屏模式保留紧凑配置栏，并在同一编辑区内切换编辑模式与对比模式。
-                      </Typography>
-                    </Stack>
-                    {useProxy && (
-                      <SearchableNodeSelect
-                        nodes={proxyNodeOptions}
-                        loading={loadingProxyNodes}
-                        value={
-                          proxyNodeOptions.find((n) => n.Link === proxyLink) || (proxyLink ? { Link: proxyLink, Name: '', ID: 0 } : null)
-                        }
-                        onChange={(newValue) => setProxyLink(typeof newValue === 'string' ? newValue : newValue?.Link || '')}
-                        displayField="Name"
-                        valueField="Link"
-                        label="代理节点"
-                        placeholder="留空则自动选择最佳节点"
-                        helperText="可选择任意现有节点，也可手动输入外部代理链接；留空时系统会自动选择最佳节点。"
-                        freeSolo={true}
-                        limit={50}
-                      />
-                    )}
-                  </Stack>
-                </Box>
-
-                <Box
-                  sx={{
-                    ...aiWorkspacePanelSx,
-                    p: { xs: 1, md: 1.25 },
-                    flexShrink: 0
-                  }}
-                >
-                  {renderAIControlPanel({ compact: true })}
-                </Box>
-              </Stack>
-            ) : (
+            {!editorFullscreen && (
               <>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                   <TextField
                     fullWidth
-                    label="文件名"
+                    label={t('templates.fields.filename')}
                     value={formData.filename}
                     onChange={(e) => setFormData({ ...formData, filename: e.target.value })}
-                    placeholder="例如: clash.yaml"
+                    placeholder={t('templates.placeholders.filename')}
+                    sx={outlinedLabelFixSx}
                   />
-                  <FormControl sx={{ minWidth: 120 }}>
-                    <InputLabel>类别</InputLabel>
-                    <Select value={formData.category} label="类别" onChange={(e) => setFormData({ ...formData, category: e.target.value })}>
+                  <FormControl sx={{ minWidth: 120, ...outlinedLabelFixSx }}>
+                    <InputLabel>{t('templates.fields.category')}</InputLabel>
+                    <Select
+                      value={formData.category}
+                      label={t('templates.fields.category')}
+                      onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                    >
                       <MenuItem value="clash">Clash</MenuItem>
                       <MenuItem value="surge">Surge</MenuItem>
                     </Select>
@@ -1720,22 +1712,18 @@ export default function TemplateList() {
                 <Autocomplete
                   freeSolo
                   options={aclPresets}
+                  sx={outlinedLabelFixSx}
                   getOptionLabel={(option) => {
                     if (typeof option === 'string') return option;
                     return option.label || option.url || '';
                   }}
                   isOptionEqualToValue={(option, value) => {
-                    // 如果 value 是字符串，比较 URL
                     if (typeof value === 'string') {
                       return option.url === value;
                     }
-                    // 如果 value 是对象，比较 URL
                     return option.url === value?.url;
                   }}
-                  value={
-                    // 如果 ruleSource 匹配某个预设的 URL，返回该预设对象
-                    aclPresets.find((preset) => preset.url === formData.ruleSource) || formData.ruleSource
-                  }
+                  value={aclPresets.find((preset) => preset.url === formData.ruleSource) || formData.ruleSource}
                   onChange={(_, newValue) => {
                     if (typeof newValue === 'string') {
                       setFormData({ ...formData, ruleSource: newValue });
@@ -1751,9 +1739,9 @@ export default function TemplateList() {
                   renderInput={(params) => (
                     <TextField
                       {...params}
-                      label="远程规则地址"
-                      placeholder="输入 URL 或选择 ACL4SSR 预设"
-                      helperText="可填写远程 ACL 规则配置地址，生成订阅时会动态加载规则"
+                      label={t('templates.fields.remoteRuleSource')}
+                      placeholder={t('templates.placeholders.ruleSource')}
+                      helperText={t('templates.helpers.ruleSource')}
                     />
                   )}
                   renderOption={(props, option) => (
@@ -1780,7 +1768,7 @@ export default function TemplateList() {
                       }}
                     />
                   }
-                  label="使用代理下载远程规则"
+                  label={t('templates.fields.useProxy')}
                 />
                 {useProxy && (
                   <Box>
@@ -1793,9 +1781,9 @@ export default function TemplateList() {
                       onChange={(newValue) => setProxyLink(typeof newValue === 'string' ? newValue : newValue?.Link || '')}
                       displayField="Name"
                       valueField="Link"
-                      label="代理节点"
-                      placeholder="留空则自动选择最佳节点"
-                      helperText="可选择任意现有节点，也可手动输入外部代理链接；留空时系统会自动选择最佳节点。"
+                      label={t('templates.fields.proxyNode')}
+                      placeholder={t('templates.placeholders.proxyNode')}
+                      helperText={t('templates.helpers.proxyNode')}
                       freeSolo={true}
                       limit={50}
                     />
@@ -1808,13 +1796,13 @@ export default function TemplateList() {
                       onChange={(e) => setFormData({ ...formData, enableIncludeAll: e.target.checked })}
                     />
                   }
-                  label="使用 Include-All 模式"
+                  label={t('templates.fields.includeAll')}
                 />
                 <Typography variant="caption" color="textSecondary" component="div" sx={{ ml: 6, mt: -0.5, lineHeight: 1.6 }}>
-                  • 开启：配置更精简，使用客户端 include-all 自动匹配节点，不遵循系统排序
+                  {t('templates.helpers.includeAllOn')}
                 </Typography>
                 <Typography variant="caption" color="textSecondary" component="div" sx={{ ml: 6, lineHeight: 1.6 }}>
-                  • 关闭（推荐）：由系统按顺序插入节点，遵循系统排序和过滤规则
+                  {t('templates.helpers.includeAllOff')}
                 </Typography>
                 <Stack direction="row" spacing={1}>
                   <Button
@@ -1823,7 +1811,7 @@ export default function TemplateList() {
                     disabled={!formData.ruleSource || converting}
                     onClick={() => handleConvertTemplate(false)}
                   >
-                    规则生成/转换
+                    {t('templates.actions.convertRules')}
                   </Button>
                   <Button
                     variant="outlined"
@@ -1831,39 +1819,43 @@ export default function TemplateList() {
                     disabled={!formData.ruleSource || converting}
                     onClick={() => handleConvertTemplate(true)}
                   >
-                    规则生成/转换（远程规则展开模式）
+                    {t('templates.actions.convertRulesExpand')}
                   </Button>
                   <Button
                     variant="outlined"
                     color="error"
                     disabled={!formData.text || converting}
                     onClick={() => {
-                      openConfirm('清空内容', '确定要清空编辑器中的所有内容吗？', () => {
+                      openConfirm(t('templates.confirm.clearTitle'), t('templates.confirm.clearContent'), () => {
                         setFormData({ ...formData, text: '' });
-                        showMessage('已清空内容');
+                        showMessage(t('templates.messages.cleared'));
                       });
                     }}
                   >
-                    清空内容
-                  </Button>
-                </Stack>
-                <Stack direction="row" justifyContent="flex-end" spacing={1}>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    startIcon={editorFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
-                    onClick={() => setEditorFullscreen((prev) => !prev)}
-                  >
-                    {editorFullscreen ? '退出全屏' : '全屏编辑'}
+                    {t('templates.actions.clearContent')}
                   </Button>
                 </Stack>
                 <Box
                   sx={{
                     ...aiWorkspacePanelSx,
-                    p: { xs: 1, md: 1.25 }
+                    p: { xs: 1, md: 1.25 },
+                    display: 'flex',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    alignItems: { xs: 'stretch', sm: 'center' },
+                    justifyContent: 'flex-end',
+                    gap: 1.5
                   }}
                 >
                   {renderAIControlPanel({ minimal: true })}
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={editorFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
+                    onClick={() => setEditorFullscreen((prev) => !prev)}
+                    sx={{ flexShrink: 0 }}
+                  >
+                    {editorFullscreen ? t('templates.actions.exitFullscreen') : t('templates.actions.fullscreen')}
+                  </Button>
                 </Box>
               </>
             )}
@@ -1885,15 +1877,14 @@ export default function TemplateList() {
         </DialogContent>
         {!editorFullscreen && (
           <DialogActions>
-            <Button onClick={handleCloseDialog}>取消</Button>
+            <Button onClick={handleCloseDialog}>{t('common.cancel')}</Button>
             <Button variant="contained" disabled={templateEditorMode === 'diff'} onClick={handleSubmit}>
-              确定
+              {t('common.confirm')}
             </Button>
           </DialogActions>
         )}
       </Dialog>
 
-      {/* 提示消息 */}
       <Snackbar
         open={snackbar.open}
         autoHideDuration={3000}
@@ -1903,7 +1894,6 @@ export default function TemplateList() {
         <Alert severity={snackbar.severity}>{snackbar.message}</Alert>
       </Snackbar>
 
-      {/* 确认对话框 */}
       <Dialog
         open={confirmOpen}
         onClose={handleConfirmClose}
@@ -1917,14 +1907,13 @@ export default function TemplateList() {
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleConfirmClose}>取消</Button>
+          <Button onClick={handleConfirmClose}>{t('common.cancel')}</Button>
           <Button onClick={handleConfirmAction} variant="contained" color="error" autoFocus>
-            确定
+            {t('common.confirm')}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* 错误提示对话框 */}
       <Dialog
         open={errorDialog.open}
         onClose={() => setErrorDialog({ ...errorDialog, open: false })}
@@ -1942,7 +1931,7 @@ export default function TemplateList() {
         </DialogContent>
         <DialogActions>
           <Button variant="contained" onClick={() => setErrorDialog({ ...errorDialog, open: false })} autoFocus>
-            知道了
+            {t('common.close')}
           </Button>
         </DialogActions>
       </Dialog>
@@ -1979,7 +1968,7 @@ export default function TemplateList() {
           {usageDialog.subscriptions?.length > 0 && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                使用中的订阅：
+                {t('templates.usage.usedSubscriptions')}
               </Typography>
               <Stack spacing={1}>
                 {usageDialog.subscriptions.map((subscriptionName) => (
@@ -1990,7 +1979,9 @@ export default function TemplateList() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setUsageDialog({ ...usageDialog, open: false, subscriptions: [], action: null })}>取消</Button>
+          <Button onClick={() => setUsageDialog({ ...usageDialog, open: false, subscriptions: [], action: null })}>
+            {t('common.cancel')}
+          </Button>
           <Button
             variant="contained"
             color="error"
@@ -2003,17 +1994,16 @@ export default function TemplateList() {
             }}
             autoFocus
           >
-            继续删除
+            {t('templates.actions.continueDelete')}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* 基础模板编辑对话框 */}
       <Dialog open={baseTemplateDialogOpen} onClose={() => setBaseTemplateDialogOpen(false)} maxWidth="lg" fullWidth>
-        <DialogTitle>{baseTemplateCategory === 'clash' ? 'Clash' : 'Surge'} 基础模板配置</DialogTitle>
+        <DialogTitle>{t('templates.baseTemplate.title', { category: baseTemplateCategory === 'clash' ? 'Clash' : 'Surge' })}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            基础模板用于规则转换时，当模板内容为空时自动填充的默认配置。修改后将影响所有使用默认模板的规则转换操作。
+            {t('templates.baseTemplate.description')}
           </Typography>
           {baseTemplateLoading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
@@ -2041,14 +2031,14 @@ export default function TemplateList() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setBaseTemplateDialogOpen(false)}>取消</Button>
+          <Button onClick={() => setBaseTemplateDialogOpen(false)}>{t('common.cancel')}</Button>
           <Button
             variant="contained"
             onClick={handleSaveBaseTemplate}
             disabled={baseTemplateLoading || baseTemplateSaving}
             startIcon={baseTemplateSaving ? <CircularProgress size={18} /> : null}
           >
-            保存
+            {t('common.save')}
           </Button>
         </DialogActions>
       </Dialog>

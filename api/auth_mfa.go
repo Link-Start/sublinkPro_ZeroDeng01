@@ -8,14 +8,12 @@ import (
 	"fmt"
 	"strings"
 	"sublink/config"
-	"sublink/database"
 	"sublink/models"
 	"sublink/utils"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v4"
-	"gorm.io/gorm"
 )
 
 const mfaResetHeader = "X-MFA-Reset-Token"
@@ -109,7 +107,7 @@ func issuePendingMFAChallenge(user *models.User) (string, error) {
 		ExpiresAt:   expiresAt.Unix(),
 		MaxAttempts: models.TOTPChallengeMaxAttempts,
 	}
-	if err := database.DB.Create(challenge).Error; err != nil {
+	if err := models.CreateMFALoginChallenge(challenge); err != nil {
 		return "", err
 	}
 	claims := &pendingMFAClaims{
@@ -128,7 +126,7 @@ func issuePendingMFAChallenge(user *models.User) (string, error) {
 }
 
 func parsePendingMFAChallenge(tokenString string) (*pendingMFAClaims, *models.MFALoginChallenge, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &pendingMFAClaims{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &pendingMFAClaims{}, func(token *jwt.Token) (any, error) {
 		return []byte(config.GetJwtSecret()), nil
 	})
 	if err != nil {
@@ -138,8 +136,8 @@ func parsePendingMFAChallenge(tokenString string) (*pendingMFAClaims, *models.MF
 	if !ok || !token.Valid || claims.Purpose != "mfa_login" || strings.TrimSpace(claims.ChallengeID) == "" {
 		return nil, nil, fmt.Errorf("invalid challenge token")
 	}
-	var challenge models.MFALoginChallenge
-	if err := database.DB.Where("challenge_id = ?", claims.ChallengeID).First(&challenge).Error; err != nil {
+	challenge, err := models.FindMFALoginChallengeByChallengeID(claims.ChallengeID)
+	if err != nil {
 		return nil, nil, err
 	}
 	if challenge.Purpose != "mfa_login" || challenge.Username != claims.Username {
@@ -152,43 +150,23 @@ func parsePendingMFAChallenge(tokenString string) (*pendingMFAClaims, *models.MF
 	if challenge.AttemptCount >= challenge.MaxAttempts {
 		return nil, nil, fmt.Errorf("challenge blocked")
 	}
-	return claims, &challenge, nil
+	return claims, challenge, nil
 }
 
 func recordMFAChallengeFailure(challenge *models.MFALoginChallenge) {
-	if challenge == nil {
-		return
-	}
-	_ = database.DB.Model(&models.MFALoginChallenge{}).
-		Where("id = ? AND consumed_at = 0 AND expires_at >= ? AND attempt_count < max_attempts", challenge.ID, time.Now().Unix()).
-		UpdateColumn("attempt_count", gorm.Expr("attempt_count + 1")).Error
+	_ = models.RecordMFAChallengeFailure(challenge, time.Now())
 }
 
 func consumeMFAChallenge(challenge *models.MFALoginChallenge) error {
-	if challenge == nil {
-		return fmt.Errorf("challenge missing")
-	}
-	consumedAt := time.Now().Unix()
-	result := database.DB.Model(&models.MFALoginChallenge{}).
-		Where("id = ? AND consumed_at = 0 AND expires_at >= ? AND attempt_count < max_attempts", challenge.ID, consumedAt).
-		UpdateColumn("consumed_at", consumedAt)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected != 1 {
-		return fmt.Errorf("challenge already consumed")
-	}
-	challenge.ConsumedAt = consumedAt
-	return nil
+	return models.ConsumeMFAChallenge(challenge, time.Now())
 }
 
 func requireCurrentUser(c *gin.Context) (*models.User, bool) {
-	usernameValue, exists := c.Get("username")
-	if !exists {
-		utils.Forbidden(c, "请求未携带token")
+	username, ok := currentUsernameFromContext(c)
+	if !ok {
 		return nil, false
 	}
-	user, err := models.FindUserByUsername(usernameValue.(string))
+	user, err := models.FindUserByUsername(username)
 	if err != nil {
 		utils.FailWithMsg(c, "用户不存在")
 		return nil, false
@@ -217,11 +195,11 @@ func respondLoginSuccess(c *gin.Context, user *models.User, ip string) {
 	token, err := GetToken(user)
 	if err != nil {
 		utils.Error("获取token失败: %v", err)
-		utils.FailWithMsg(c, "获取token失败")
+		utils.FailWithI18n(c, "获取token失败", "backend.auth.login.tokenFailed", nil)
 		return
 	}
 	go notifyUserLogin(user.Username, ip)
-	utils.OkDetailed(c, "登录成功", buildLoginSuccessData(token))
+	utils.OkDetailedI18n(c, "登录成功", buildLoginSuccessData(token), "backend.auth.login.success", nil)
 }
 
 func buildMFAStatus(user *models.User) MFAStatusResponse {
@@ -496,9 +474,4 @@ func ReauthMFA(c *gin.Context) {
 
 func GenerateScopedMFAResetToken(username string, expiresAt time.Time) (string, error) {
 	return signMFAResetToken(username, expiresAt)
-}
-
-func cleanupExpiredMFAChallenges() {
-	nowUnix := time.Now().Unix()
-	_ = database.DB.Where("expires_at < ? OR consumed_at > 0", nowUnix).Delete(&models.MFALoginChallenge{}).Error
 }

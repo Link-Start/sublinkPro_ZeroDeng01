@@ -3,6 +3,7 @@ package protocol
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -34,12 +35,12 @@ func init() {
 
 // ss匹配规则
 type Ss struct {
-	Param  Param       `json:"param"`
-	Server string      `json:"server"`
-	Port   interface{} `json:"port"`
-	Name   string      `json:"name"`
-	Type   string      `json:"type"`
-	Plugin SsPlugin    `json:"plugin"` // SS 插件配置
+	Param  Param    `json:"param"`
+	Server string   `json:"server"`
+	Port   any      `json:"port"`
+	Name   string   `json:"name"`
+	Type   string   `json:"type"`
+	Plugin SsPlugin `json:"plugin"` // SS 插件配置
 }
 type Param struct {
 	Cipher   string `json:"cipher"`
@@ -231,7 +232,7 @@ func EncodeSSURL(s Ss) string {
 	u := url.URL{
 		Scheme:   "ss",
 		User:     url.User(p),
-		Host:     fmt.Sprintf("%s:%s", s.Server, utils.GetPortString(s.Port)),
+		Host:     formatURLHostPort(s.Server, utils.GetPortString(s.Port)),
 		Fragment: s.Name,
 	}
 
@@ -317,9 +318,12 @@ func DecodeSSURL(s string) (Ss, error) {
 		return Ss{}, fmt.Errorf("invalid SS URL")
 	}
 	// 解析参数
-	parts := strings.Split(addr, ":")
-	port, _ := strconv.Atoi(parts[len(parts)-1])
-	server := strings.Replace(utils.UnwrapIPv6Host(addr), ":"+parts[len(parts)-1], "", -1)
+	host, rawPort, err := net.SplitHostPort(addr)
+	if err != nil {
+		return Ss{}, fmt.Errorf("invalid SS address: %w", err)
+	}
+	port, _ := strconv.Atoi(rawPort)
+	server := utils.UnwrapIPv6Host(host)
 	cipher := strings.Split(param, ":")[0]
 	password := strings.Replace(param, cipher+":", "", 1)
 	// 如果没有备注则使用服务器加端口命名

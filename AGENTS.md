@@ -53,9 +53,11 @@ When instructions conflict, trust these files first:
    `docs/development.md`: local development workflow and project structure.
 3. `docs/configuration.md`：配置优先级、环境变量与运行语义。  
    `docs/configuration.md`: config precedence, environment variables, and runtime behavior.
-4. `.github/workflows/build-release.yml`：CI / release 构建预期。  
+4. `.github/workflows/pr-checks.yml`：PR 自动检查预期。
+   `.github/workflows/pr-checks.yml`: PR automated check expectations.
+5. `.github/workflows/build-release.yml`：CI / release 构建预期。
    `.github/workflows/build-release.yml`: CI and release build expectations.
-5. `Dockerfile`：生产构建路径的权威实现。  
+6. `Dockerfile`：生产构建路径的权威实现。
    `Dockerfile`: canonical production build sequence.
 
 对于前端命令、输出目录和工具链，请优先依赖上面的仓库文件，不要套用通用模板或旧脚手架默认值。  
@@ -272,6 +274,68 @@ These directories may contain runtime state and should be handled carefully:
 正常功能开发时，不要随意编辑、删除或格式化这些运行时数据。  
 Do not casually edit, delete, or reformat runtime data during normal feature work.
 
+## 4.2 国际化规范 / Internationalization requirements
+
+本仓库已经具备前端国际化基础设施和成对维护的国际化实施契约。凡是新增或修改用户可见文本、API 展示语义、任务结果、通知内容、导出内容、文档说明或语言选择行为，都必须先阅读并遵守 `docs/internationalization.md` 与 `docs/internationalization.zh-CN.md`。
+This repository already has frontend i18n infrastructure and paired internationalization contract documents. Whenever you add or change user-visible text, API display semantics, task results, notification content, exported content, documentation, or language-selection behavior, read and follow `docs/internationalization.md` and `docs/internationalization.zh-CN.md` first.
+
+### 当前国际化形态 / Current i18n shape
+
+- 首批支持 locale 是 `zh-CN` 和 `en-US`；新增用户可见前端文本时，必须在同一次变更中补齐这两种语言。
+  The initial supported locales are `zh-CN` and `en-US`; new user-visible frontend text must include both translations in the same change.
+- 前端使用 `i18next`、`react-i18next` 和 `i18next-browser-languagedetector`，入口在 `webs/src/i18n/index.js`，locale、MUI 映射与格式化 helper 在 `webs/src/i18n/locales.js`。
+  The frontend uses `i18next`, `react-i18next`, and `i18next-browser-languagedetector`; the entrypoint is `webs/src/i18n/index.js`, with locale normalization, MUI mapping, and formatting helpers in `webs/src/i18n/locales.js`.
+- 翻译资源当前按 locale 放在 `webs/src/i18n/locales/`，例如 `zh-CN.json` 和 `en-US.json`；不要把前端翻译资源放进后端目录、运行时目录或数据库。
+  Translation resources currently live under `webs/src/i18n/locales/`, such as `zh-CN.json` and `en-US.json`; do not place frontend translation resources in backend directories, runtime directories, or the database.
+- 语言选择不使用 URL path 或 subdomain；`SUBLINK_WEB_BASE_PATH` 已经是 Web UI 路由关注点，国际化改动不得额外引入语言路径前缀或域名路由层。
+  Language selection does not use URL paths or subdomains; `SUBLINK_WEB_BASE_PATH` is already the Web UI routing concern, so i18n changes must not add locale path prefixes or host-based routing.
+
+### 前端国际化规则 / Frontend i18n rules
+
+- React 组件中的用户可见文本必须通过 `useTranslation()`、`Trans` 或已有 i18n helper 输出；不要在 JSX、toast、dialog、菜单、表单校验、空状态、tooltip、图表标签或移动端入口中继续硬编码中文或英文文案。
+  User-visible text in React components must go through `useTranslation()`, `Trans`, or existing i18n helpers; do not keep hardcoded Chinese or English copy in JSX, toasts, dialogs, menus, form validation, empty states, tooltips, chart labels, or mobile entry points.
+- Key 必须表达稳定语义而不是当前文案；使用 lower camel case 的点路径，按功能或稳定 UI 边界组织 namespace，优先复用 `common`、`airports`、`subscriptions`、`dashboard`、`settings`、`tasks` 等既有结构。
+  Keys must express stable meaning rather than current wording; use lower-camel-case dot paths, organize namespaces by feature or stable UI boundary, and prefer existing structures such as `common`, `airports`, `subscriptions`, `dashboard`, `settings`, and `tasks`.
+- 不要在 JSX 中拼接多个翻译片段来组成一句话；完整短语、句子、复数、插值和富文本应作为完整翻译项处理，富文本使用 `Trans` 并显式传入允许的组件。
+  Do not concatenate translated fragments in JSX to build a sentence; full phrases, sentences, plurals, interpolation, and rich text should be represented as complete translation entries, with rich text rendered through `Trans` and explicit allowed components.
+- 日期、时间、相对时间、数字、百分比、字节、流量和统计值必须通过接收当前 locale 的共享 helper 或 `Intl` 格式化；不要在功能组件里硬编码中文或英文日期顺序、分隔符或单位。
+  Dates, times, relative time, numbers, percentages, bytes, traffic values, and statistics must be formatted through shared helpers that receive the active locale or through `Intl`; do not hardcode Chinese or English date order, separators, or units in feature components.
+- MUI locale 必须由当前应用 locale 推导，新增语言时同步更新 `getMuiLocale()`、语言归一化、语言切换入口和完整翻译资源。
+  The MUI locale must be derived from the active app locale; when adding a language, update `getMuiLocale()`, language normalization, language switchers, and complete translation resources together.
+- 协议值、节点名称、域名、文件路径、API key、token、模板语法、订阅输出和外部客户端消费的字段值必须保持原样；只翻译周边 UI 标签和说明。
+  Protocol values, node names, domains, file paths, API keys, tokens, template syntax, subscription output, and field values consumed by external clients must remain unchanged; translate only surrounding UI labels and descriptions.
+
+### 后端国际化规则 / Backend i18n rules
+
+- 后端必须保持现有 API 客户端兼容。已经暴露的 `msg`、`code`、字段名、路由、状态码和业务码不得为了国际化随意改名或改语义。
+  The backend must preserve compatibility with existing API clients. Existing `msg`, `code`, field names, routes, status codes, and business codes must not be renamed or semantically changed just for i18n.
+- 新增或改造会在 Web UI 展示的错误、任务结果、通知结果或操作反馈时，优先在响应中补充可选的 `i18nKey` 和 `i18nParams`，让前端按当前 locale 渲染；`msg` 保留为旧客户端和诊断回退。
+  When adding or revising errors, task results, notification results, or operation feedback shown in the Web UI, prefer adding optional `i18nKey` and `i18nParams` so the frontend can render with the active locale; keep `msg` as the fallback for older clients and diagnostics.
+- `i18nParams` 只能包含普通 JSON 值，不能塞入已本地化句子、HTML、React 结构、错误对象、数据库模型或敏感数据。
+  `i18nParams` may contain only plain JSON values, not localized sentences, HTML, React structures, error objects, database models, or sensitive data.
+- 日志、调试标识、协议输出、订阅内容、模板变量、webhook payload、Telegram Bot 回复、导出文件和外部客户端直接消费的内容，应按其产品边界处理；如果内容会进入 Web UI 且需要本地化，使用 `i18nKey` 加参数而不是让后端按浏览器语言拼接文案。
+  Logs, debug identifiers, protocol output, subscription content, template variables, webhook payloads, Telegram Bot replies, exported files, and content consumed directly by external clients should be handled according to their product boundary; if the content enters the Web UI and needs localization, use `i18nKey` plus params instead of having the backend assemble browser-language text.
+
+### 跨层同步 / Cross-layer synchronization
+
+- 任何影响前端展示文案、API 错误语义、任务中心结果、通知内容、设置说明、认证/MFA 提示、配置语义、订阅分享提示或导出展示的改动，都必须同步检查后端 handler/service、`webs/src/api/`、相关 `webs/src/views/` 页面、翻译资源和文档。
+  Any change affecting frontend copy, API error semantics, task-center results, notification content, settings descriptions, auth/MFA prompts, configuration semantics, subscription-share prompts, or exported display must check backend handlers/services, `webs/src/api/`, related `webs/src/views/` pages, translation resources, and docs together.
+- 如果只改一层后确认另一层无需修改，交付说明必须写明已检查哪些前端、后端或文档入口，以及为什么无需同步调整。
+  If only one layer changes and the other layer truly needs no edit, the delivery summary must state which frontend, backend, or documentation entry points were checked and why no synchronized change was required.
+- i18n 行为或贡献者契约变化时，必须成对更新 `docs/internationalization.md` 与 `docs/internationalization.zh-CN.md`；涉及 README 或功能文档时，也必须同步更新英文 canonical 文件和对应 `*.zh-CN.md` 文件。
+  When i18n behavior or contributor contracts change, update `docs/internationalization.md` and `docs/internationalization.zh-CN.md` as a pair; if README or feature docs are affected, also update the English canonical file and the matching `*.zh-CN.md` file.
+
+### 国际化完成条件 / I18n definition of done
+
+- 至少确认 `zh-CN` 和 `en-US` 两种语言下新增或修改的页面、弹窗、抽屉、移动端入口、空状态、错误状态、任务结果和通知文案都可读且语义一致。
+  Verify at least that the changed pages, dialogs, drawers, mobile entry points, empty states, error states, task results, and notification copy are readable and semantically aligned in both `zh-CN` and `en-US`.
+- 前端 i18n 代码改动必须运行 `yarn run lint`；如果影响路由、资源、base-path、生产集成或构建行为，还必须运行 `yarn run build`。不要发明仓库中不存在的前端 `test` 或 `typecheck` 命令。
+  Frontend i18n code changes must run `yarn run lint`; if routing, assets, base-path, production integration, or build behavior is affected, also run `yarn run build`. Do not invent frontend `test` or `typecheck` commands that do not exist in this repository.
+- 后端 i18n 行为改动必须对改动的 Go 文件运行 `gofmt`，并运行 `golangci-lint run` 和相关 `go test`；涉及 API 响应契约时，优先补充或更新 handler/response 回归测试。
+  Backend i18n behavior changes must run `gofmt` on changed Go files plus `golangci-lint run` and relevant `go test`; when API response contracts are affected, prefer adding or updating handler/response regression tests.
+- 文档-only 的 AGENTS 或 i18n 规范改动不需要运行前后端构建，但必须人工核对链接、双语一致性、现有命令真实性，以及是否与本文件的跨层同步、测试和文档规则冲突。
+  Documentation-only AGENTS or i18n contract changes do not require frontend/backend builds, but must be manually checked for links, bilingual consistency, real command names, and consistency with this file's cross-layer, testing, and documentation rules.
+
 ## 5. 本地开发命令 / Local development commands
 
 ### 后端 / Backend
@@ -300,11 +364,38 @@ yarn run start
 Run from `webs/`:
 
 ```bash
-yarn run build
 yarn run lint
+yarn run build
 yarn run lint:fix
 yarn run prettier
 ```
+
+前端改动完成后必须至少运行 `yarn run lint`；涉及构建、路由、资源或生产集成时还必须运行 `yarn run build`。
+After frontend changes, run at least `yarn run lint`; also run `yarn run build` when build output, routing, assets, or production integration are affected.
+
+### 后端校验 / Backend validation
+
+在仓库根目录执行：
+Run from the repo root:
+
+```bash
+gofmt -w <changed-go-files>
+golangci-lint run
+go test ./...
+```
+
+后端开发完成后必须保持 Go 文件通过 `gofmt` 格式化，并运行 `golangci-lint run` 和相关 Go 测试；发布前的 GitHub 工作流会运行 `golangci-lint` 和全仓 `go test ./...`。
+After backend changes, keep Go files formatted with `gofmt`, and run `golangci-lint run` plus relevant Go tests; the GitHub release workflow runs `golangci-lint` and repository-wide `go test ./...` before publishing.
+
+### PR 自动检查 / PR automated checks
+
+`.github/workflows/pr-checks.yml` 会在 PR 打开、重新打开或标记 ready for review 时自动运行；后续修复提交不会自动重复消耗 Actions，PR 作者本人或仓库管理员可在 PR 评论 `/recheck` 手动触发新一轮检查。
+`.github/workflows/pr-checks.yml` runs automatically when a PR is opened, reopened, or marked ready for review; later fix commits do not auto-consume Actions, and the PR author or repository admin can comment `/recheck` on the PR to trigger another run.
+
+- 后端检查：`golangci-lint` 和 `go test ./...`。
+  Backend checks: `golangci-lint` and `go test ./...`.
+- 前端检查：`yarn run lint` 和 `yarn run build`。
+  Frontend checks: `yarn run lint` and `yarn run build`.
 
 ### 后端构建 / Backend build
 
@@ -343,7 +434,11 @@ Observed CI flow in `.github/workflows/build-release.yml`:
   Node 22
 - `corepack enable`
 - `cd webs && yarn install --immutable`
+- `cd webs && yarn run lint`
 - `cd webs && yarn run build`
+- Go 1.26.3
+- `golangci-lint`
+- `go test ./...`
 - 下载前端产物到 `static/`  
   download frontend artifacts into `static/`
 - `go build -tags=prod ...`
@@ -555,6 +650,108 @@ Several core features in this repo directly depend on mihomo-related capabilitie
 - 引入新模式前，先匹配周围文件的命名与组织方式。  
   Match surrounding naming and file organization before introducing new patterns.
 
+### 注释规范 / Commenting standards
+
+合理、规范、可维护的注释是优秀开发习惯的一部分，但注释应解释意图、约束和边界，而不是重复代码本身。  
+Clear, maintainable comments are part of good engineering practice, but comments should explain intent, constraints, and boundaries rather than restating the code.
+
+- 新增或修改关键业务逻辑、跨层契约、复杂条件分支、调度任务、迁移、并发流程、缓存策略、mihomo 集成、认证 / 安全逻辑、配置优先级和非显而易见的算法时，必须补充必要注释。  
+  Add necessary comments when adding or changing key business logic, cross-layer contracts, complex branches, scheduled tasks, migrations, concurrency flows, caching strategies, mihomo integrations, auth/security logic, configuration precedence, or non-obvious algorithms.
+- 注释以中文为主；如涉及上游库、协议字段、标准术语、公开 API 名称或必须与英文文档一致的概念，可保留英文术语或在中文后补充英文。  
+  Comments should primarily use Chinese; keep English terms when they refer to upstream libraries, protocol fields, standard terminology, public API names, or concepts that must match English documentation.
+- 修改代码时要同步更新附近已有注释，避免注释描述旧行为、旧字段、旧限制或旧流程。  
+  When changing code, update nearby comments so they do not describe old behavior, fields, constraints, or flows.
+- 不要为了“有注释”而添加噪音注释；简单 getter、直观赋值、普通 JSX 结构、显而易见的错误返回和自解释变量名通常不需要注释。  
+  Do not add noisy comments just to increase comment count; simple getters, obvious assignments, ordinary JSX structure, straightforward error returns, and self-explanatory variable names usually do not need comments.
+- 注释不得掩盖设计问题；如果逻辑复杂到必须用大量注释解释，优先考虑拆分函数、提取语义变量或重命名，使代码本身更清晰。  
+  Comments must not hide design problems; if logic needs extensive explanation, first consider splitting functions, extracting semantic variables, or renaming so the code is clearer.
+- 对 TODO、FIXME、临时兼容逻辑或已知限制，必须写清楚原因、触发条件和后续处理方向；不要留下无上下文的占位注释。  
+  For TODOs, FIXMEs, temporary compatibility logic, or known limitations, document the reason, trigger condition, and follow-up direction; do not leave context-free placeholder comments.
+
+#### Go 注释要求 / Go comment requirements
+
+- 导出的包、类型、函数、方法、接口、常量和变量应遵循 Go 文档注释习惯：注释以被注释标识符开头，并用完整句子说明职责、输入输出约束或副作用。  
+  Exported packages, types, functions, methods, interfaces, constants, and variables should follow Go documentation conventions: start the comment with the identifier and describe responsibility, input/output constraints, or side effects in complete sentences.
+- 包注释应放在 `doc.go` 或包内合适文件顶部，用于说明包职责和边界；不要在包注释中堆砌实现细节。  
+  Package comments should live in `doc.go` or an appropriate package file header and explain package responsibility and boundaries without dumping implementation details.
+- 对非导出但业务关键的函数、结构体字段、状态枚举、迁移步骤和 goroutine 生命周期，也应添加简短中文注释说明为什么存在、何时调用、有什么副作用。  
+  Non-exported but business-critical functions, struct fields, state enums, migration steps, and goroutine lifecycles should also have concise Chinese comments explaining why they exist, when they run, and what side effects they have.
+- 错误处理注释应说明业务语义或恢复策略，不要写成 `// 返回错误` 这类重复代码的注释。  
+  Error-handling comments should explain business semantics or recovery strategy, not restate code such as `// return error`.
+- 注释内容应能通过 `gofmt` 保持整洁；不要使用大段 ASCII 图、过长行或和 Go doc 风格冲突的装饰性注释。  
+  Comments should remain tidy under `gofmt`; avoid large ASCII diagrams, overly long lines, or decorative comments that conflict with Go doc style.
+
+#### 前端注释要求 / Frontend comment requirements
+
+- React 组件、Hook、API 请求封装、复杂 `useMemo` / `useEffect`、权限判断、响应式布局分支、主题适配 helper 和跨组件数据流，应在非显而易见时补充中文注释说明设计意图。  
+  React components, hooks, API wrappers, complex `useMemo` / `useEffect` logic, permission checks, responsive layout branches, theme helpers, and cross-component data flow should have Chinese comments when their intent is not obvious.
+- JSX 中避免堆叠注释；优先把复杂条件提取为命名变量或小组件，再在变量或 helper 附近说明原因。  
+  Avoid piling comments inside JSX; prefer extracting complex conditions into named variables or small components, then document the reason near the variable or helper.
+- 主题和样式注释应说明复用的语义层级、light / dark 差异或与现有样板的关系，不要只描述颜色本身。  
+  Theme and style comments should explain semantic layering, light/dark differences, or relationship to existing patterns rather than merely describing colors.
+- 前端请求层注释必须与后端接口语义保持一致；如果接口字段、权限或错误结构变化，要同步更新请求层、页面层和相关注释。  
+  Comments in the frontend API layer must stay aligned with backend API semantics; if fields, permissions, or error shapes change, update request-layer comments, view-layer comments, and related code together.
+- 临时 UI 限制、兼容浏览器行为、移动端特殊处理和可访问性折中必须写明原因，避免后续维护者误删。  
+  Temporary UI constraints, browser compatibility behavior, mobile-specific handling, and accessibility tradeoffs must explain their reason so future maintainers do not remove them accidentally.
+
+### 测试规范 / Testing standards
+
+规范、可维护的测试用例和清晰的测试文件组织是保证代码质量的基本要求。测试应验证真实业务行为和边界条件，而不是只覆盖实现细节或为了提高覆盖率而堆砌脆弱用例。  
+Clear, maintainable tests and predictable test file organization are basic requirements for code quality. Tests should verify real behavior and boundaries rather than implementation details or fragile coverage-only cases.
+
+- 新增或修改后端关键业务逻辑、接口契约、权限判断、配置语义、迁移、调度任务、mihomo 集成、协议解析和数据转换时，应同步补充或更新对应 Go 测试。  
+  Add or update Go tests when adding or changing backend key business logic, API contracts, permission checks, configuration semantics, migrations, scheduled jobs, mihomo integrations, protocol parsing, or data transformations.
+- 测试名称应描述“场景 + 期望结果”，避免只写 `TestSuccess`、`TestError`、`should work` 这类无法表达业务意图的名称。  
+  Test names should describe the scenario and expected outcome; avoid names like `TestSuccess`, `TestError`, or `should work` that do not express business intent.
+- 测试应覆盖正常路径、边界条件、错误路径和权限 / 配置差异；不要只验证最容易通过的 happy path。  
+  Tests should cover happy paths, boundaries, error paths, and permission/configuration differences; do not test only the easiest happy path.
+- 测试数据应尽量局部、可读、最小化，并通过 helper / fixture 表达业务含义；不要复制大量无关字段或依赖生产运行时数据。  
+  Test data should be local, readable, minimal, and expressed through helpers or fixtures with business meaning; do not copy large irrelevant payloads or depend on production runtime data.
+- 测试之间必须相互隔离，不能依赖执行顺序、共享可变全局状态、真实外部网络、用户本机环境或 `db/`、`logs/`、`cache/`、`out/` 中的运行时状态。  
+  Tests must be isolated from each other and must not depend on execution order, shared mutable global state, real external networks, the user's local environment, or runtime state under `db/`, `logs/`, `cache/`, or `out/`.
+- 断言应明确验证关键输出、状态变化、副作用和错误语义；不要只断言“没有报错”，除非该函数的唯一契约就是不产生错误。  
+  Assertions should explicitly verify important outputs, state changes, side effects, and error semantics; do not only assert “no error” unless that is the function's only contract.
+- 测试失败信息应能帮助定位问题，必要时包含输入场景、期望值和实际值；不要留下难以判断原因的裸断言。  
+  Failure messages should help diagnose the issue, including scenario, expected value, and actual value when useful; avoid bare assertions that make failures hard to interpret.
+- 修复缺陷时，优先先写能复现问题的回归测试，再修复实现；不得删除、跳过或弱化失败测试来掩盖问题。  
+  When fixing a bug, prefer writing a regression test that reproduces the issue before changing implementation; never delete, skip, or weaken failing tests to hide problems.
+- 如果当前模块已有测试风格、fixture、mock 或 helper，应优先复用并保持一致；只有在现有模式明显不足时才新增更清晰的小型测试 helper。  
+  If the module already has test style, fixtures, mocks, or helpers, reuse and match them first; introduce a clearer small test helper only when existing patterns are insufficient.
+- 不要为未接入的测试框架、脚本或 CI 流程编写假设性测试说明；测试命令必须来自仓库事实来源或本次同步新增的真实脚本。  
+  Do not document hypothetical test frameworks, scripts, or CI flows that are not wired into the repo; test commands must come from repository sources of truth or real scripts added in the same work.
+
+#### Go 测试要求 / Go test requirements
+
+- Go 测试文件必须使用 `_test.go` 后缀，并与被测文件或被测包放在同一包目录下；例如 `a.go` 的测试文件应命名为 `a_test.go`。  
+  Go test files must use the `_test.go` suffix and live in the same package directory as the code under test; for example, tests for `a.go` should be named `a_test.go`.
+- Go 测试函数命名应遵循标准格式：`TestXxx`、`BenchmarkXxx`、`FuzzXxx`、`ExampleXxx`；表驱动子用例应通过 `t.Run` 命名清楚具体场景。  
+  Go test functions should follow standard names: `TestXxx`, `BenchmarkXxx`, `FuzzXxx`, and `ExampleXxx`; table-driven subtests should use `t.Run` with clear scenario names.
+- 优先使用表驱动测试覆盖同一函数的多种输入、边界和错误情况；每个 case 应包含清晰的名称、输入、期望输出和期望错误语义。  
+  Prefer table-driven tests for multiple inputs, boundaries, and error cases of the same function; each case should include a clear name, input, expected output, and expected error semantics.
+- 测试 helper 应调用 `t.Helper()`，临时目录和临时文件应优先使用 `t.TempDir()`，清理动作应通过 `t.Cleanup()` 注册。  
+  Test helpers should call `t.Helper()`, temporary directories and files should prefer `t.TempDir()`, and cleanup should be registered with `t.Cleanup()`.
+- 涉及时间、随机数、网络、数据库、文件系统或 goroutine 的测试，应显式控制依赖或使用可替换接口，避免不稳定、慢速或依赖真实环境的 flaky test。  
+  Tests involving time, randomness, network, databases, filesystems, or goroutines should explicitly control dependencies or use replaceable interfaces to avoid flaky, slow, or environment-dependent tests.
+- HTTP handler 测试应优先使用 `httptest` 和明确的请求 / 响应断言；数据库相关测试应使用隔离的测试库、事务或临时存储，不能读写生产默认数据目录。  
+  HTTP handler tests should prefer `httptest` with explicit request/response assertions; database tests should use isolated test databases, transactions, or temporary storage and must not read or write production default data directories.
+- 并发测试不要依赖 `time.Sleep` 猜测时序；优先使用 channel、context、WaitGroup、可控 clock 或明确的同步点。  
+  Concurrency tests should not rely on `time.Sleep` to guess timing; prefer channels, contexts, WaitGroups, controllable clocks, or explicit synchronization points.
+- 如果使用外部包测试形式（`package xxx_test`），应只验证公开 API；如果需要访问包内细节，应使用同包测试并保持测试关注行为而不是私有实现。  
+  If using external package tests (`package xxx_test`), test only public APIs; if package internals must be accessed, use same-package tests while keeping focus on behavior rather than private implementation.
+
+#### 前端测试边界 / Frontend test boundaries
+
+- 本仓库不默认要求为前端改动新增测试；前端改动的常规质量保障以 lint、build、人工交互验证和 light / dark / 响应式检查为主。  
+  This repository does not require frontend tests by default; frontend quality is primarily guarded by lint, build, manual interaction checks, and light/dark/responsive verification.
+- 只有在用户明确要求、仓库后续接入前端测试框架，或当前模块已经存在前端测试时，才补充或更新前端测试。  
+  Add or update frontend tests only when explicitly requested, when a frontend test framework is later wired into the repo, or when the touched module already has frontend tests.
+- 如果确实编写前端测试，文件应与被测文件保持可追溯的命名关系，优先使用 `*.test.jsx`、`*.test.js`、`*.spec.jsx` 或 `*.spec.js`，并靠近被测组件 / hook / helper 放置，除非仓库已有集中测试目录约定。  
+  If frontend tests are written, test files should keep traceable names to the code under test, preferably `*.test.jsx`, `*.test.js`, `*.spec.jsx`, or `*.spec.js`, placed near the component/hook/helper unless the repo already has a centralized test directory convention.
+- 如果确实编写前端测试，应从用户可观察行为出发，验证文本、角色、状态变化、交互结果、错误提示和 loading / empty / disabled 等状态，而不是断言内部 state 或 MUI 生成的脆弱 class 名。  
+  If frontend tests are written, they should start from user-observable behavior, verifying text, roles, state changes, interaction results, error messages, and loading/empty/disabled states rather than internal state or fragile MUI-generated class names.
+- 不要为了满足后端测试规范而发明前端测试脚本、测试框架或 CI 流程；前端测试命令必须来自 `webs/package.json`、CI 或本次真实接入的脚本。  
+  Do not invent frontend test scripts, frameworks, or CI flows to satisfy backend testing standards; frontend test commands must come from `webs/package.json`, CI, or scripts genuinely added in the same work.
+
 ### 避免陈旧假设 / Avoid stale assumptions
 
 - 不要向文档写入仓库中不存在的命令。  
@@ -569,33 +766,35 @@ Several core features in this repo directly depend on mihomo-related capabilitie
 对于前端改动：  
 For frontend changes:
 
-- 至少运行与改动相关的 `yarn` 命令。  
-  At minimum, run relevant `yarn` commands in `webs/`.
-- 通常应运行 `yarn run lint` 和 `yarn run build`。  
-  Usually run `yarn run lint` and `yarn run build`.
+- 必须运行 `yarn run lint`。
+  Run `yarn run lint`.
+- 涉及构建产物、资源路径、路由、base-path 或生产集成时，必须同时运行 `yarn run build`。
+  Also run `yarn run build` when build output, asset paths, routing, base-path, or production integration are affected.
 
 对于后端改动：  
 For backend changes:
 
+- Go 文件必须通过 `gofmt` 格式化；本地开发可对改动文件运行 `gofmt -w <changed-go-files>`。
+  Go files must be formatted with `gofmt`; locally, run `gofmt -w <changed-go-files>` for changed Go files.
+- 必须运行 `golangci-lint run` 做基础 Go lint / 静态检查。
+  Run `golangci-lint run` for baseline Go lint/static checks.
+- 新增或修改后端逻辑时必须运行相关 `go test`；发布前 GitHub 工作流运行全仓 `go test ./...`。
+  Run relevant `go test` for backend logic changes; the GitHub release workflow runs repository-wide `go test ./...` before publishing.
 - 至少保证相关包可以成功构建。  
   At minimum, ensure the touched package builds cleanly.
-- 如果改动包内已有测试，优先运行相关 `go test`。  
-  Use targeted `go test` where tests already exist for touched packages.
 - 如果改了启动、构建或配置行为，要跑真实构建命令验证。  
   If you modify startup, build, or config behavior, verify with an actual build command.
 
 注意：  
 Notes:
 
-- 仓库里有 Go 测试文件，但 docs / CI 中没有发现单一权威的根级测试命令。  
-  The repo contains Go test files, but no single authoritative root test command was found in docs or CI.
-- 没有发现权威的全仓 Go lint 命令。  
-  No authoritative repo-wide Go lint command was found.
+- GitHub 发布构建会在构建二进制前运行 `golangci-lint` 和 `go test ./...`。
+  The GitHub release build runs `golangci-lint` and `go test ./...` before building binaries.
 - `webs/package.json` 中没有权威的前端 `test` 或 `typecheck` 脚本。  
   No authoritative frontend `test` or `typecheck` script was found in `webs/package.json`.
 
-因此，写文档或自动化时不要发明不存在的校验流程。  
-So when documenting or automating verification, avoid inventing nonexistent commands.
+因此，写文档或自动化时不要发明不存在的前端测试 / typecheck 流程。
+So when documenting or automating verification, avoid inventing nonexistent frontend test/typecheck workflows.
 
 ## 13. 改行为前优先查看的区域 / High-value areas to inspect before changing behavior
 
@@ -652,15 +851,24 @@ If you change any of the following, update docs in the same work when appropriat
 Relevant docs include:
 
 - `README.md`
+- `README.zh-CN.md`
 - `docs/development.md`
+- `docs/development.zh-CN.md`
 - `docs/configuration.md`
+- `docs/configuration.zh-CN.md`
 - `docs/installation.md`
+- `docs/installation.zh-CN.md`
 - `docs/features/*`
+- `docs/features/*.zh-CN.md`
 
 - 文档同步不是可选收尾步骤，而是变更完成条件的一部分。只要代码改动改变了行为、接口、字段、页面文案、用户流程、命令、配置、部署、迁移或安全语义，就必须在同一工作中同步更新相应文档。  
   Documentation sync is not an optional finishing step; it is part of the definition of done. If a code change alters behavior, APIs, fields, page copy, user flows, commands, configuration, deployment, migration, or security semantics, the relevant documentation must be updated in the same piece of work.
+- 文档现在同时维护英文 canonical 版本和简体中文 `*.zh-CN.md` 版本；凡是需要更新 `README.md`、`docs/*.md` 或 `docs/features/*.md` 的变更，必须同步更新对应的 `README.zh-CN.md`、`docs/*.zh-CN.md` 或 `docs/features/*.zh-CN.md`，并保持语言切换和相对链接一致。
+  Documentation is now maintained in both canonical English files and Simplified Chinese `*.zh-CN.md` files; any change that updates `README.md`, `docs/*.md`, or `docs/features/*.md` must also update the matching `README.zh-CN.md`, `docs/*.zh-CN.md`, or `docs/features/*.zh-CN.md`, keeping language switches and relative links consistent.
 - 不允许出现“代码已经修改，但 `README.md`、`docs/` 或功能说明仍保留旧语义”的交付状态；如果确认无需更新文档，也应在变更说明中明确写明原因。  
   Do not leave the project in a state where code has changed but `README.md`, `docs/`, or feature documentation still describes the old behavior; if no doc update is needed, explicitly state why.
+- 不允许只更新一种语言的文档后交付；如果某个变更确实只影响其中一种语言（例如修正翻译措辞），交付说明必须明确写出另一种语言已检查且无需修改。
+  Do not ship documentation updates in only one language; if a change truly affects only one language, such as wording in a translation, the delivery summary must state that the other language was checked and does not need changes.
 
 ## 15. 安全提示 / Safety notes
 

@@ -52,6 +52,7 @@ type Subcription struct {
 	ProtocolBlacklist     string           `json:"ProtocolBlacklist"`                         // 协议黑名单（逗号分隔）
 	DeduplicationRule     string           `json:"DeduplicationRule"`                         // 去重规则配置(JSON)
 	RefreshUsageOnRequest bool             `gorm:"default:true" json:"RefreshUsageOnRequest"` // 获取订阅时是否实时刷新用量信息
+	UpdateInterval        int              `gorm:"default:0" json:"UpdateInterval"`           // 订阅客户端更新间隔（小时，0=使用默认值）
 	MaxFraudScore         int              `gorm:"default:0" json:"MaxFraudScore"`            // 最大欺诈评分（0=不限制）
 	OnlyResidential       bool             `gorm:"default:false" json:"OnlyResidential"`      // 仅住宅IP
 	OnlyNative            bool             `gorm:"default:false" json:"OnlyNative"`           // 仅原生IP
@@ -179,7 +180,7 @@ func (sub *Subcription) AddScripts(scriptIDs []int) error {
 
 // 更新订阅 (Write-Through)
 func (sub *Subcription) Update() error {
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"name":                     sub.Name,
 		"config":                   sub.Config,
 		"create_date":              sub.CreateDate,
@@ -199,6 +200,7 @@ func (sub *Subcription) Update() error {
 		"protocol_blacklist":       sub.ProtocolBlacklist,
 		"deduplication_rule":       sub.DeduplicationRule,
 		"refresh_usage_on_request": sub.RefreshUsageOnRequest,
+		"update_interval":          sub.UpdateInterval,
 		"max_fraud_score":          sub.MaxFraudScore,
 		"only_residential":         sub.OnlyResidential,
 		"only_native":              sub.OnlyNative,
@@ -458,12 +460,13 @@ func (sub *Subcription) ApplyFilters(nodes []Node) []Node {
 	if hasWhitelistRules || hasBlacklistRules {
 		var filteredNodes []Node
 		for _, node := range result {
+			filterName := node.EffectiveName()
 			// 黑名单优先
-			if hasBlacklistRules && utils.MatchesNodeNameFilter(sub.NodeNameBlacklist, node.LinkName) {
+			if hasBlacklistRules && utils.MatchesNodeNameFilter(sub.NodeNameBlacklist, filterName) {
 				continue
 			}
 			// 白名单
-			if hasWhitelistRules && !utils.MatchesNodeNameFilter(sub.NodeNameWhitelist, node.LinkName) {
+			if hasWhitelistRules && !utils.MatchesNodeNameFilter(sub.NodeNameWhitelist, filterName) {
 				continue
 			}
 			filteredNodes = append(filteredNodes, node)
@@ -666,17 +669,18 @@ func (sub *Subcription) GetSub(clientType string) error {
 			// 添加分组中的所有节点
 			if nodes, exists := groupNodeMap[item.Group]; exists {
 				for _, node := range nodes {
-					if !nodeMap[node.Name] {
+					nameKey := node.EffectiveName()
+					if !nodeMap[nameKey] {
 						sub.Nodes = append(sub.Nodes, node)
-						nodeMap[node.Name] = true
+						nodeMap[nameKey] = true
 					}
 				}
 			}
 		} else {
 			// 添加单个节点
-			if item.Node != nil && !nodeMap[item.Node.Name] {
+			if item.Node != nil && !nodeMap[item.Node.EffectiveName()] {
 				sub.Nodes = append(sub.Nodes, *item.Node)
-				nodeMap[item.Node.Name] = true
+				nodeMap[item.Node.EffectiveName()] = true
 			}
 		}
 	}
@@ -938,6 +942,7 @@ func (sub *Subcription) Copy() (*Subcription, error) {
 		ProtocolBlacklist:     sub.ProtocolBlacklist,
 		DeduplicationRule:     sub.DeduplicationRule,
 		RefreshUsageOnRequest: sub.RefreshUsageOnRequest,
+		UpdateInterval:        sub.UpdateInterval,
 	}
 
 	// 使用事务确保数据一致性
@@ -1110,7 +1115,7 @@ func (sub *Subcription) BatchSort(sortBy, sortOrder string) error {
 		case "source":
 			less = subNodes[i].Node.Source < subNodes[j].Node.Source
 		case "name":
-			less = subNodes[i].Node.Name < subNodes[j].Node.Name
+			less = subNodes[i].Node.EffectiveName() < subNodes[j].Node.EffectiveName()
 		case "protocol":
 			less = subNodes[i].Node.Protocol < subNodes[j].Node.Protocol
 		case "delay":
@@ -1217,7 +1222,7 @@ func (sub *Subcription) PreviewSub() (*PreviewResult, error) {
 		processedLinkName := utils.PreprocessNodeName(sub.NodeNamePreprocess, node.LinkName)
 
 		// 计算预览名称
-		previewName := node.Name
+		previewName := node.EffectiveName()
 		previewLink := node.Link
 
 		if sub.NodeNameRule != "" {
@@ -1301,7 +1306,7 @@ func (sub *Subcription) ApplyNodeFilterScripts(nodes []Node, scripts []ScriptWit
 	}
 
 	result := nodes
-	nodesJSON, err := json.Marshal(result)
+	nodesJSON, err := json.Marshal(nodesForFilterScript(result))
 	if err != nil {
 		utils.Error("序列化节点失败: %v", err)
 		return nodes
@@ -1326,6 +1331,18 @@ func (sub *Subcription) ApplyNodeFilterScripts(nodes []Node, scripts []ScriptWit
 		nodesJSON = resJSON
 	}
 
+	return result
+}
+
+func nodesForFilterScript(nodes []Node) []Node {
+	result := make([]Node, 0, len(nodes))
+	for _, node := range nodes {
+		node.Name = node.EffectiveName()
+		// 脚本收到的是运行时副本，Name 已切换为实际出站名称；设为 remark 避免后续渲染再次回退到 LinkName。
+		node.NameMode = NodeNameModeRemark
+		node.EffectiveNameValue = node.Name
+		result = append(result, node)
+	}
 	return result
 }
 

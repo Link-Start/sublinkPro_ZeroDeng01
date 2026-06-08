@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 // material-ui
 import { useTheme } from '@mui/material/styles';
@@ -20,13 +21,11 @@ import Transitions from 'ui-component/extended/Transitions';
 import useResolvedColorScheme from 'hooks/useResolvedColorScheme';
 import { getHeaderPopoverTokens, getHeaderTriggerTokens } from '../headerPopoverTokens';
 
-// assets
-import { IconCoffee } from '@tabler/icons-react';
-
-import { donationConfig } from 'config/donation';
+import { donationConfig, affiliateRecommendationConfig } from 'config/donation';
 
 export default function DonationSection() {
   const theme = useTheme();
+  const { t } = useTranslation();
   const downMD = useMediaQuery(theme.breakpoints.down('md'));
   const { isDark } = useResolvedColorScheme();
   const [open, setOpen] = useState(false);
@@ -62,7 +61,7 @@ export default function DonationSection() {
   return (
     <>
       <Box sx={{ ml: 2 }}>
-        <Tooltip title="打赏支持">
+        <Tooltip title={t('donation.tooltip')}>
           <Avatar
             variant="rounded"
             sx={{
@@ -85,7 +84,7 @@ export default function DonationSection() {
             aria-haspopup="true"
             onClick={handleToggle}
           >
-            <IconCoffee stroke={1.5} size="20px" />
+            {donationConfig.headerIcon}
           </Avatar>
         </Tooltip>
       </Box>
@@ -120,7 +119,7 @@ export default function DonationSection() {
                   >
                     <Stack sx={{ gap: 2, p: 2 }}>
                       <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'center' }}>
-                        <Typography variant="subtitle1">{donationConfig.title}</Typography>
+                        <Typography variant="subtitle1">{t('donation.title')}</Typography>
                       </Stack>
                       <Divider />
                       <Stack spacing={1.5}>
@@ -132,6 +131,7 @@ export default function DonationSection() {
                             startIcon={item.icon}
                             href={item.url}
                             target="_blank"
+                            rel="noopener noreferrer"
                             fullWidth
                             sx={{
                               justifyContent: 'flex-start',
@@ -144,10 +144,65 @@ export default function DonationSection() {
                               }
                             }}
                           >
-                            {item.title}
+                            {t(`donation.links.${item.id}`, item.title)}
                           </Button>
                         ))}
                       </Stack>
+
+                      {affiliateRecommendationConfig && affiliateRecommendationConfig.items.length > 0 && (
+                        <>
+                          <Divider />
+                          <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'center' }}>
+                            <Typography variant="subtitle2" color="text.secondary">
+                              {t('affiliate.title')}
+                            </Typography>
+                          </Stack>
+                          <Stack spacing={1.5}>
+                            {affiliateRecommendationConfig.items.map((item, index) => (
+                              <Tooltip
+                                key={index}
+                                title={[
+                                  t(`affiliate.items.${item.id}.description`, item.description),
+                                  ...(item.highlights || []).map((_, highlightIndex) =>
+                                    t(`affiliate.items.${item.id}.highlights.${highlightIndex}`, item.highlights[highlightIndex])
+                                  )
+                                ].join(' · ')}
+                                placement="left"
+                                arrow
+                              >
+                                <Button
+                                  variant="outlined"
+                                  color={item.color || 'primary'}
+                                  startIcon={item.icon}
+                                  href={item.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  fullWidth
+                                  sx={{
+                                    justifyContent: 'flex-start',
+                                    px: 2,
+                                    py: 1,
+                                    borderRadius: 2,
+                                    transition: 'all 0.2s',
+                                    '&:hover': {
+                                      transform: 'translateY(-2px)'
+                                    }
+                                  }}
+                                >
+                                  {t(`affiliate.items.${item.id}.title`, item.title)} {' · '}
+                                  {t(`affiliate.items.${item.id}.ctaLabel`, item.ctaLabel)}
+                                </Button>
+                              </Tooltip>
+                            ))}
+                            <Typography
+                              variant="caption"
+                              sx={{ color: 'text.disabled', textAlign: 'center', fontSize: '0.65rem', mt: 0.5, px: 1 }}
+                            >
+                              {t('affiliate.disclaimer')}
+                            </Typography>
+                          </Stack>
+                        </>
+                      )}
                     </Stack>
                   </MainCard>
                 )}

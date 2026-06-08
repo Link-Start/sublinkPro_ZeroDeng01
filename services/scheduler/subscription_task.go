@@ -21,6 +21,7 @@ func ExecuteSubscriptionTaskWithTrigger(id int, url string, subName string, trig
 	var downloadWithProxy bool
 	var proxyLink string
 	var userAgent string
+	var requestHeaders models.AirportRequestHeaders
 	var fetchUsageInfo bool
 	var skipTLSVerify bool
 
@@ -31,6 +32,7 @@ func ExecuteSubscriptionTaskWithTrigger(id int, url string, subName string, trig
 		downloadWithProxy = airport.DownloadWithProxy
 		proxyLink = airport.ProxyLink
 		userAgent = airport.UserAgent
+		requestHeaders = airport.RequestHeaders
 		fetchUsageInfo = airport.FetchUsageInfo
 		skipTLSVerify = airport.SkipTLSVerify
 	}
@@ -47,7 +49,7 @@ func ExecuteSubscriptionTaskWithTrigger(id int, url string, subName string, trig
 		reporter = NewTaskManagerReporter(tm, task.ID)
 	}
 
-	usageInfo, err := node.LoadClashConfigFromURLWithReporter(id, url, subName, downloadWithProxy, proxyLink, userAgent, reporter, fetchUsageInfo, skipTLSVerify)
+	changedNodeIDs, usageInfo, err := node.LoadClashConfigFromURLWithReporter(id, url, subName, downloadWithProxy, proxyLink, userAgent, requestHeaders, reporter, fetchUsageInfo, skipTLSVerify)
 	if err != nil {
 		// 仅在失败时发送通知，成功通知由 node/sub.go 中的 scheduleClashToNodeLinks 发送
 		// 这样可以避免重复通知，且成功通知包含更详细的节点统计信息
@@ -57,7 +59,7 @@ func ExecuteSubscriptionTaskWithTrigger(id int, url string, subName string, trig
 		notifications.Publish("subscription.sync_failed", notifications.Payload{
 			Title:   "订阅更新失败",
 			Message: fmt.Sprintf("订阅 [%s] 更新失败: %v", subName, err),
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"id":     id,
 				"name":   subName,
 				"status": "error",
@@ -82,4 +84,57 @@ func ExecuteSubscriptionTaskWithTrigger(id int, url string, subName string, trig
 			applyAutoTagRules(updatedNodes, "subscription_update")
 		}
 	}()
+
+	// 订阅更新成功后，如机场开启“更新后检测”，则立即按指定策略补做一次机场内节点检测。
+	if airport != nil && airport.UpdateAfterDetect && airport.UpdateAfterDetectProfileID > 0 {
+		profileID := airport.UpdateAfterDetectProfileID
+		changedOnly := airport.UpdateAfterDetectChangedOnly
+		go func(airportID int, airportName string, nodeCheckProfileID int, changedNodeIDs []int, changedOnly bool) {
+			nodeIDs, shouldRun, listErr := resolveUpdateAfterDetectNodeIDs(airportID, changedNodeIDs, changedOnly)
+			if listErr != nil {
+				utils.Warn("获取机场节点失败，跳过更新后检测 - ID: %d, Error: %v", airportID, listErr)
+				return
+			}
+			if !shouldRun {
+				if changedOnly {
+					utils.Info("机场 [%s] 开启了仅检测变化/新增节点，但本次更新没有变化/新增节点，跳过更新后检测", airportName)
+				} else {
+					utils.Warn("机场 [%s] 更新后检测已启用，但没有可检测节点", airportName)
+				}
+				return
+			}
+
+			if changedOnly {
+				utils.Info("机场 [%s] 订阅更新完成，仅检测 %d 个变化/新增节点，策略 ID: %d", airportName, len(nodeIDs), nodeCheckProfileID)
+			} else {
+				utils.Info("机场 [%s] 订阅更新完成，立即执行节点检测策略 ID: %d", airportName, nodeCheckProfileID)
+			}
+
+			ExecuteNodeCheckWithProfile(nodeCheckProfileID, nodeIDs, models.TaskTriggerAirportUpdate)
+		}(id, subName, profileID, changedNodeIDs, changedOnly)
+	}
+}
+
+// resolveUpdateAfterDetectNodeIDs 解析更新后检测的目标节点；仅检测变化节点时，空变更代表跳过检测而不是回退到全机场。
+func resolveUpdateAfterDetectNodeIDs(airportID int, changedNodeIDs []int, changedOnly bool) ([]int, bool, error) {
+	if changedOnly {
+		if len(changedNodeIDs) == 0 {
+			return nil, false, nil
+		}
+		return changedNodeIDs, true, nil
+	}
+
+	updatedNodes, err := models.ListBySourceID(airportID)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(updatedNodes) == 0 {
+		return nil, false, nil
+	}
+
+	nodeIDs := make([]int, 0, len(updatedNodes))
+	for _, n := range updatedNodes {
+		nodeIDs = append(nodeIDs, n.ID)
+	}
+	return nodeIDs, true, nil
 }

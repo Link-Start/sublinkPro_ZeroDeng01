@@ -2,6 +2,11 @@ package dto
 
 import "time"
 
+type AirportRequestHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 // 订阅节点排序请求体结构
 type SubcriptionNodeSortUpdate struct {
 	ID       int            `json:"ID" binding:"required"`
@@ -24,19 +29,23 @@ type UserAccessKey struct {
 
 // AirportRequest 机场添加/更新请求体结构
 type AirportRequest struct {
-	ID                int    `json:"id"`
-	Name              string `json:"name" binding:"required"`
-	URL               string `json:"url" binding:"required,url"`
-	CronExpr          string `json:"cronExpr" binding:"required"`
-	Enabled           bool   `json:"enabled"`
-	Group             string `json:"group"`
-	DownloadWithProxy bool   `json:"downloadWithProxy"`
-	ProxyLink         string `json:"proxyLink"`
-	UserAgent         string `json:"userAgent"`
-	FetchUsageInfo    bool   `json:"fetchUsageInfo"` // 是否获取用量信息
-	SkipTLSVerify     bool   `json:"skipTLSVerify"`  // 是否跳过TLS证书验证
-	Remark            string `json:"remark"`         // 备注信息
-	Logo              string `json:"logo"`           // Logo配置
+	ID                           int                    `json:"id"`
+	Name                         string                 `json:"name" binding:"required"`
+	URL                          string                 `json:"url" binding:"required,url"`
+	CronExpr                     string                 `json:"cronExpr" binding:"required"`
+	Enabled                      bool                   `json:"enabled"`
+	Group                        string                 `json:"group"`
+	DownloadWithProxy            bool                   `json:"downloadWithProxy"`
+	ProxyLink                    string                 `json:"proxyLink"`
+	UserAgent                    string                 `json:"userAgent"`
+	RequestHeaders               []AirportRequestHeader `json:"requestHeaders"`
+	FetchUsageInfo               bool                   `json:"fetchUsageInfo"`               // 是否获取用量信息
+	SkipTLSVerify                bool                   `json:"skipTLSVerify"`                // 是否跳过TLS证书验证
+	UpdateAfterDetect            bool                   `json:"updateAfterDetect"`            // 更新后是否自动执行节点检测
+	UpdateAfterDetectProfileID   int                    `json:"updateAfterDetectProfileId"`   // 更新后检测使用的节点检测策略ID
+	UpdateAfterDetectChangedOnly bool                   `json:"updateAfterDetectChangedOnly"` // 更新后仅检测变化/新增节点
+	Remark                       string                 `json:"remark"`                       // 备注信息
+	Logo                         string                 `json:"logo"`                         // Logo配置
 	// 节点过滤规则（拉取时生效）
 	NodeNameWhitelist string `json:"nodeNameWhitelist"` // 节点名称白名单 (JSON数组)
 	NodeNameBlacklist string `json:"nodeNameBlacklist"` // 节点名称黑名单 (JSON数组)
@@ -47,8 +56,9 @@ type AirportRequest struct {
 	// 去重规则
 	DeduplicationRule string `json:"deduplicationRule"` // 去重规则配置(JSON)
 	// 节点名称唯一化
-	NodeNameUniquify bool   `json:"nodeNameUniquify"` // 是否开启节点名称唯一化
-	NodeNamePrefix   string `json:"nodeNamePrefix"`   // 自定义名称前缀（可选）
+	NodeNameUniquify      bool   `json:"nodeNameUniquify"`      // 是否开启节点名称唯一化
+	NodeNamePrefix        string `json:"nodeNamePrefix"`        // 自定义名称前缀（可选）
+	NodeNameIntraUniquify bool   `json:"nodeNameIntraUniquify"` // 是否开启机场内节点名称唯一化
 }
 
 // AirportBatchUpdateRequest 机场批量更新请求体结构

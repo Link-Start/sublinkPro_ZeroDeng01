@@ -229,10 +229,6 @@ func (user *User) recoveryCodes() ([]TOTPRecoveryCode, error) {
 	return parseRecoveryCodes(user.TOTPRecoveryCodes)
 }
 
-func (user *User) pendingRecoveryCodes() ([]TOTPRecoveryCode, error) {
-	return parseRecoveryCodes(user.TOTPPendingRecoveryCodes)
-}
-
 func (user *User) currentTOTPSecret() (string, error) {
 	if strings.TrimSpace(user.TOTPSecret) == "" {
 		return "", nil
@@ -245,6 +241,49 @@ func (user *User) pendingTOTPSecret() (string, error) {
 		return "", nil
 	}
 	return DecryptTOTPSecret(user.TOTPPendingSecret)
+}
+
+// CreateMFALoginChallenge 创建待验证的 MFA 登录挑战。
+func CreateMFALoginChallenge(challenge *MFALoginChallenge) error {
+	return database.DB.Create(challenge).Error
+}
+
+// FindMFALoginChallengeByChallengeID 按挑战 ID 查询 MFA 登录挑战。
+func FindMFALoginChallengeByChallengeID(challengeID string) (*MFALoginChallenge, error) {
+	var challenge MFALoginChallenge
+	if err := database.DB.Where("challenge_id = ?", challengeID).First(&challenge).Error; err != nil {
+		return nil, err
+	}
+	return &challenge, nil
+}
+
+// RecordMFAChallengeFailure 记录一次仍有效挑战的失败尝试。
+func RecordMFAChallengeFailure(challenge *MFALoginChallenge, now time.Time) error {
+	if challenge == nil {
+		return nil
+	}
+	return database.DB.Model(&MFALoginChallenge{}).
+		Where("id = ? AND consumed_at = 0 AND expires_at >= ? AND attempt_count < max_attempts", challenge.ID, now.Unix()).
+		UpdateColumn("attempt_count", gorm.Expr("attempt_count + 1")).Error
+}
+
+// ConsumeMFAChallenge 标记仍有效且未超限的 MFA 挑战为已消费。
+func ConsumeMFAChallenge(challenge *MFALoginChallenge, now time.Time) error {
+	if challenge == nil {
+		return fmt.Errorf("challenge missing")
+	}
+	consumedAt := now.Unix()
+	result := database.DB.Model(&MFALoginChallenge{}).
+		Where("id = ? AND consumed_at = 0 AND expires_at >= ? AND attempt_count < max_attempts", challenge.ID, consumedAt).
+		UpdateColumn("consumed_at", consumedAt)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return fmt.Errorf("challenge already consumed")
+	}
+	challenge.ConsumedAt = consumedAt
+	return nil
 }
 
 func TOTPProvisioningURI(issuer, accountName, secret string) string {
@@ -275,7 +314,7 @@ func (user *User) BeginTOTPEnrollment() (string, string, []string, error) {
 	if err != nil {
 		return "", "", nil, err
 	}
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"totp_pending_secret":         encryptedSecret,
 		"totp_pending_recovery_codes": encodedCodes,
 	}
@@ -300,7 +339,7 @@ func (user *User) ConfirmTOTPEnrollment(code string, now time.Time) error {
 	if !VerifyTOTPCode(pendingSecret, code, now) {
 		return fmt.Errorf("验证码错误或已过期")
 	}
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"totp_enabled":                true,
 		"totp_secret":                 user.TOTPPendingSecret,
 		"totp_pending_secret":         "",
@@ -388,7 +427,7 @@ func (user *User) RegenerateRecoveryCodes() ([]string, error) {
 }
 
 func (user *User) DisableTOTP() error {
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"totp_enabled":                false,
 		"totp_secret":                 "",
 		"totp_pending_secret":         "",

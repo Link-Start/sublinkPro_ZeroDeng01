@@ -3,6 +3,8 @@ package models
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -20,44 +22,49 @@ import (
 )
 
 type Node struct {
-	ID              int    `gorm:"primaryKey"`
-	Link            string //出站代理原始连接
-	LinkHash        string `gorm:"size:64;uniqueIndex" json:"-"`
-	Name            string //系统内节点名称
-	LinkName        string //节点原始名称
-	Protocol        string `gorm:"size:32;index"` //协议类型 (vmess, vless, trojan, ss 等)
-	LinkAddress     string //节点原始地址
-	LinkHost        string //节点原始Host
-	LinkPort        string //节点原始端口
-	LinkCountry     string //节点所属国家、落地IP国家
-	LandingIP       string //落地IP地址
-	DialerProxyName string
-	Source          string `gorm:"default:'manual'"`
-	SourceID        int
-	SourceSort      int `gorm:"default:0"` // 上游订阅中的顺序（从1开始；0表示未初始化）
-	Group           string
-	Speed           float64   `gorm:"default:0"`          // 测速结果(MB/s)
-	DelayTime       int       `gorm:"default:0"`          // 延迟时间(ms)
-	SpeedStatus     string    `gorm:"default:'untested'"` // 速度测试状态: untested, success, timeout, error
-	DelayStatus     string    `gorm:"default:'untested'"` // 延迟测试状态: untested, success, timeout, error
-	LatencyCheckAt  string    // 延迟测试时间
-	SpeedCheckAt    string    // 测速时间
-	CreatedAt       time.Time `gorm:"autoCreateTime" json:"CreatedAt"` // 创建时间
-	UpdatedAt       time.Time `gorm:"autoUpdateTime" json:"UpdatedAt"` // 更新时间
-	Tags            string    // 标签ID，逗号分隔，如 "1,3,5"
-	ContentHash     string    `gorm:"index;size:64"` // 节点内容哈希（SHA256），用于全库去重
-	IsBroadcast     bool      `gorm:"default:false"` // IP来源：true=广播IP false=原生IP
-	IsResidential   bool      `gorm:"default:false"` // 是否住宅IP
-	FraudScore      int       `gorm:"default:-1"`    // 欺诈评分（0-100，-1表示未检测）
-	QualityStatus   string    `gorm:"size:32;default:'untested'"`
-	QualityFamily   string    `gorm:"size:16;default:''"`
-	UnlockSummary   string    `gorm:"type:text"`
-	UnlockCheckAt   string
+	ID                 int    `gorm:"primaryKey"`
+	Link               string //出站代理原始连接
+	LinkHash           string `gorm:"size:64;uniqueIndex" json:"-"`
+	Name               string //系统内节点备注名称
+	LinkName           string //节点原始名称
+	NameMode           string `gorm:"size:16;default:'link'"` // 节点出站名称模式：link=使用原始名称，remark=使用备注名称
+	EffectiveNameValue string `gorm:"-" json:"-"`             // 节点实际出站名称，仅用于运行时响应/脚本上下文
+	Protocol           string `gorm:"size:32;index"`          //协议类型 (vmess, vless, trojan, ss 等)
+	LinkAddress        string //节点原始地址
+	LinkHost           string //节点原始Host
+	LinkPort           string //节点原始端口
+	LinkCountry        string //节点所属国家、落地IP国家
+	LandingIP          string //落地IP地址
+	DialerProxyName    string
+	Source             string `gorm:"default:'manual'"`
+	SourceID           int
+	SourceSort         int `gorm:"default:0"` // 上游订阅中的顺序（从1开始；0表示未初始化）
+	Group              string
+	Speed              float64   `gorm:"default:0"`          // 测速结果(MB/s)
+	DelayTime          int       `gorm:"default:0"`          // 延迟时间(ms)
+	SpeedStatus        string    `gorm:"default:'untested'"` // 速度测试状态: untested, success, timeout, error
+	DelayStatus        string    `gorm:"default:'untested'"` // 延迟测试状态: untested, success, timeout, error
+	LatencyCheckAt     string    // 延迟测试时间
+	SpeedCheckAt       string    // 测速时间
+	CreatedAt          time.Time `gorm:"autoCreateTime" json:"CreatedAt"` // 创建时间
+	UpdatedAt          time.Time `gorm:"autoUpdateTime" json:"UpdatedAt"` // 更新时间
+	Tags               string    // 标签ID，逗号分隔，如 "1,3,5"
+	ContentHash        string    `gorm:"index;size:64"` // 节点内容哈希（SHA256），用于全库去重
+	IsBroadcast        bool      `gorm:"default:false"` // IP来源：true=广播IP false=原生IP
+	IsResidential      bool      `gorm:"default:false"` // 是否住宅IP
+	FraudScore         int       `gorm:"default:-1"`    // 欺诈评分（0-100，-1表示未检测）
+	QualityStatus      string    `gorm:"size:32;default:'untested'"`
+	QualityFamily      string    `gorm:"size:16;default:''"`
+	UnlockSummary      string    `gorm:"type:text"`
+	UnlockCheckAt      string
 }
 
 type NodeSelectorItem struct {
 	ID            int
 	Name          string
+	LinkName      string
+	NameMode      string
+	EffectiveName string
 	Group         string
 	Source        string
 	LinkCountry   string
@@ -66,9 +73,13 @@ type NodeSelectorItem struct {
 }
 
 func BuildNodeSelectorItem(node Node) NodeSelectorItem {
+	effectiveName := node.EffectiveName()
 	return NodeSelectorItem{
 		ID:            node.ID,
-		Name:          node.Name,
+		Name:          effectiveName,
+		LinkName:      node.LinkName,
+		NameMode:      NormalizeNodeNameMode(node.NameMode),
+		EffectiveName: effectiveName,
 		Group:         node.Group,
 		Source:        node.Source,
 		LinkCountry:   node.LinkCountry,
@@ -86,6 +97,13 @@ func ToNodeSelectorItems(nodes []Node) []NodeSelectorItem {
 }
 
 const (
+	// NodeNameModeLink 表示出站/订阅渲染时使用上游原始名称。
+	NodeNameModeLink = "link"
+	// NodeNameModeRemark 表示出站/订阅渲染时优先使用用户备注名称。
+	NodeNameModeRemark = "remark"
+	// NodeNameModeCustom 兼容“自定义名称”语义，落库仍统一为 remark。
+	NodeNameModeCustom = NodeNameModeRemark
+
 	QualityStatusUntested = "untested"
 	QualityStatusSuccess  = "success"
 	QualityStatusPartial  = "partial"
@@ -98,6 +116,9 @@ const (
 
 // nodeCache 使用新的泛型缓存，支持二级索引
 var nodeCache *cache.MapCache[int, Node]
+
+// ErrNodeNameExists 表示节点备注名称已被其他节点占用。
+var ErrNodeNameExists = errors.New("node name already exists")
 
 func init() {
 	// 初始化节点缓存，主键为 ID
@@ -117,6 +138,177 @@ func hashNodeLink(link string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func normalizeNodeRemarkName(name string) string {
+	return strings.TrimSpace(name)
+}
+
+// FindNodeNameConflict 查询除当前节点外是否存在相同备注名称的节点。
+func FindNodeNameConflict(name string, excludeID int) (Node, bool, error) {
+	trimmedName := normalizeNodeRemarkName(name)
+	if trimmedName == "" {
+		return Node{}, false, nil
+	}
+
+	if nodeCache != nil {
+		results := nodeCache.Filter(func(n Node) bool {
+			return n.ID != excludeID && normalizeNodeRemarkName(n.Name) == trimmedName
+		})
+		if len(results) > 0 {
+			return results[0], true, nil
+		}
+	}
+
+	if database.DB == nil {
+		return Node{}, false, nil
+	}
+	var node Node
+	err := database.DB.Where("TRIM(name) = ? AND id <> ?", trimmedName, excludeID).First(&node).Error
+	if err == nil {
+		return node, true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Node{}, false, nil
+	}
+	return Node{}, false, err
+}
+
+// EnsureNodeNameAvailable 校验备注名称在全局节点中唯一。
+func EnsureNodeNameAvailable(name string, excludeID int) error {
+	if _, exists, err := FindNodeNameConflict(name, excludeID); err != nil {
+		return err
+	} else if exists {
+		return ErrNodeNameExists
+	}
+	return nil
+}
+
+func nodeNameReserved(name string, excludeID int, reserved map[string]bool) bool {
+	trimmedName := normalizeNodeRemarkName(name)
+	if trimmedName == "" {
+		return false
+	}
+	if reserved != nil && reserved[trimmedName] {
+		return true
+	}
+	_, exists, err := FindNodeNameConflict(trimmedName, excludeID)
+	return err == nil && exists
+}
+
+func reserveNodeName(name string, reserved map[string]bool) string {
+	if reserved != nil {
+		reserved[name] = true
+	}
+	return name
+}
+
+func uniqueNodeNameWithBase(baseName string, excludeID int, reserved map[string]bool) string {
+	baseName = normalizeNodeRemarkName(baseName)
+	if baseName == "" {
+		baseName = "未命名节点"
+	}
+	if !nodeNameReserved(baseName, excludeID, reserved) {
+		return reserveNodeName(baseName, reserved)
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", baseName, suffix)
+		if !nodeNameReserved(candidate, excludeID, reserved) {
+			return reserveNodeName(candidate, reserved)
+		}
+	}
+}
+
+// GenerateUniqueNodeName 为自动导入节点生成全局唯一备注名称。
+func GenerateUniqueNodeName(baseName string, excludeID int, reserved map[string]bool) string {
+	return uniqueNodeNameWithBase(baseName, excludeID, reserved)
+}
+
+// GenerateUniqueNodeNameWithSource 在备注撞名时优先使用“原始名@来源”格式生成唯一备注。
+func GenerateUniqueNodeNameWithSource(baseName string, sourceName string, excludeID int, reserved map[string]bool) string {
+	baseName = normalizeNodeRemarkName(baseName)
+	if baseName == "" {
+		baseName = "未命名节点"
+	}
+	if !nodeNameReserved(baseName, excludeID, reserved) {
+		return reserveNodeName(baseName, reserved)
+	}
+	sourceName = normalizeNodeRemarkName(sourceName)
+	if sourceName != "" && sourceName != "manual" {
+		return uniqueNodeNameWithBase(baseName+"@"+sourceName, excludeID, reserved)
+	}
+	return uniqueNodeNameWithBase(baseName, excludeID, reserved)
+}
+
+// NormalizeNodeNameMode 规范化节点名称模式，未知值统一回退到原始名称模式。
+func NormalizeNodeNameMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case NodeNameModeRemark, "custom":
+		return NodeNameModeRemark
+	default:
+		return NodeNameModeLink
+	}
+}
+
+func effectiveNameFrom(name, linkName, mode string) string {
+	trimmedName := strings.TrimSpace(name)
+	trimmedLinkName := strings.TrimSpace(linkName)
+	if NormalizeNodeNameMode(mode) == NodeNameModeRemark && trimmedName != "" {
+		return name
+	}
+	if trimmedLinkName != "" {
+		return linkName
+	}
+	return name
+}
+
+// EffectiveName 返回当前节点实际用于出站、订阅渲染和链式代理匹配的名称。
+func (node Node) EffectiveName() string {
+	return effectiveNameFrom(node.Name, node.LinkName, node.NameMode)
+}
+
+// UseRemarkName 判断当前节点是否应优先使用用户备注名称。
+func (node Node) UseRemarkName() bool {
+	return NormalizeNodeNameMode(node.NameMode) == NodeNameModeRemark && strings.TrimSpace(node.Name) != ""
+}
+
+// ShouldSyncNameFromLink 判断上游原始名称变化时是否应同步覆盖备注名称。
+func (node Node) ShouldSyncNameFromLink() bool {
+	return NormalizeNodeNameMode(node.NameMode) == NodeNameModeLink || strings.TrimSpace(node.LinkName) == strings.TrimSpace(node.Name)
+}
+
+// NameAfterLinkNameUpdate 返回原始名称刷新后应保存的备注名称。
+func (node Node) NameAfterLinkNameUpdate(newLinkName string) string {
+	if node.ShouldSyncNameFromLink() {
+		return newLinkName
+	}
+	return node.Name
+}
+
+// NormalizeNameModeDefaults 补齐节点名称模式与历史名称兜底值。
+func (node *Node) NormalizeNameModeDefaults() {
+	if node == nil {
+		return
+	}
+	node.NameMode = NormalizeNodeNameMode(node.NameMode)
+	if strings.TrimSpace(node.Name) == "" {
+		node.Name = node.LinkName
+	}
+	node.EffectiveNameValue = node.EffectiveName()
+}
+
+// MarshalJSON 在所有节点 JSON 响应中补充 EffectiveName，同时保留原始 Name/LinkName。
+func (node Node) MarshalJSON() ([]byte, error) {
+	type nodeJSON Node
+	alias := nodeJSON(node)
+	alias.NameMode = NormalizeNodeNameMode(node.NameMode)
+	return json.Marshal(struct {
+		nodeJSON
+		EffectiveName string `json:"EffectiveName"`
+	}{
+		nodeJSON:      alias,
+		EffectiveName: node.EffectiveName(),
+	})
+}
+
 func (node *Node) syncLinkHash() {
 	node.LinkHash = hashNodeLink(node.Link)
 }
@@ -126,6 +318,7 @@ func NormalizeNodeForImport(node *Node) {
 	if node == nil {
 		return
 	}
+	node.NormalizeNameModeDefaults()
 
 	if node.Link != "" {
 		node.syncLinkHash()
@@ -209,11 +402,72 @@ func InitNodeCache() error {
 
 // UpdateNodeCache 更新节点缓存（供外部包使用）
 func UpdateNodeCache(id int, node Node) {
+	node.NormalizeNameModeDefaults()
+	if node.Link != "" {
+		node.syncLinkHash()
+	}
 	nodeCache.Set(id, node)
+}
+
+// FindNodeLinkConflict 查询除当前节点外是否存在相同原始链接的节点。
+func FindNodeLinkConflict(link string, excludeID int) (Node, bool, error) {
+	var existingNode Node
+	err := database.DB.Where("link = ? AND id != ?", link, excludeID).First(&existingNode).Error
+	if err == nil {
+		return existingNode, true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Node{}, false, nil
+	}
+	return Node{}, false, err
+}
+
+// UpdateNodeFields 按字段更新节点并同步缓存。
+func UpdateNodeFields(id int, updates map[string]any) error {
+	if mode, ok := updates["NameMode"].(string); ok {
+		updates["name_mode"] = NormalizeNodeNameMode(mode)
+		delete(updates, "NameMode")
+	}
+	if mode, ok := updates["name_mode"].(string); ok {
+		updates["name_mode"] = NormalizeNodeNameMode(mode)
+	}
+	if link, ok := updates["link"].(string); ok {
+		updates["link_hash"] = hashNodeLink(link)
+	}
+	if name, ok := updates["name"].(string); ok {
+		if err := EnsureNodeNameAvailable(name, id); err != nil {
+			return err
+		}
+	}
+	if err := database.DB.Model(&Node{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		return err
+	}
+	if cachedNode, ok := nodeCache.Get(id); ok {
+		if link, ok := updates["link"].(string); ok {
+			cachedNode.Link = link
+			cachedNode.LinkHash = hashNodeLink(link)
+		}
+		if linkName, ok := updates["link_name"].(string); ok {
+			cachedNode.LinkName = linkName
+		}
+		if name, ok := updates["name"].(string); ok {
+			cachedNode.Name = name
+		}
+		if nameMode, ok := updates["name_mode"].(string); ok {
+			cachedNode.NameMode = NormalizeNodeNameMode(nameMode)
+		}
+		cachedNode.EffectiveNameValue = cachedNode.EffectiveName()
+		nodeCache.Set(id, cachedNode)
+	}
+	return nil
 }
 
 // Add 添加节点
 func (node *Node) Add() error {
+	node.NormalizeNameModeDefaults()
+	if err := EnsureNodeNameAvailable(node.Name, node.ID); err != nil {
+		return err
+	}
 	node.syncLinkHash()
 	// Write-Through: 先写数据库
 	err := database.DB.Create(node).Error
@@ -227,19 +481,21 @@ func (node *Node) Add() error {
 
 // Update 更新节点
 func (node *Node) Update() error {
-	node.syncLinkHash()
-	if node.Name == "" {
-		node.Name = node.LinkName
+	node.NormalizeNameModeDefaults()
+	if err := EnsureNodeNameAvailable(node.Name, node.ID); err != nil {
+		return err
 	}
+	node.syncLinkHash()
 	node.UpdatedAt = time.Now()
 	// Write-Through: 先写数据库
-	err := database.DB.Model(node).Select("Name", "Link", "LinkHash", "DialerProxyName", "Group", "LinkName", "LinkAddress", "LinkHost", "LinkPort", "LinkCountry", "Protocol", "ContentHash", "UpdatedAt").Updates(node).Error
+	err := database.DB.Model(node).Select("Name", "NameMode", "Link", "LinkHash", "DialerProxyName", "Group", "LinkName", "LinkAddress", "LinkHost", "LinkPort", "LinkCountry", "Protocol", "ContentHash", "UpdatedAt").Updates(node).Error
 	if err != nil {
 		return err
 	}
 	// 更新缓存：获取完整节点后更新
 	if cachedNode, ok := nodeCache.Get(node.ID); ok {
 		cachedNode.Name = node.Name
+		cachedNode.NameMode = node.NameMode
 		cachedNode.Link = node.Link
 		cachedNode.LinkHash = node.LinkHash
 		cachedNode.DialerProxyName = node.DialerProxyName
@@ -252,6 +508,7 @@ func (node *Node) Update() error {
 		cachedNode.Protocol = node.Protocol
 		cachedNode.ContentHash = node.ContentHash
 		cachedNode.UpdatedAt = node.UpdatedAt
+		cachedNode.EffectiveNameValue = cachedNode.EffectiveName()
 		nodeCache.Set(node.ID, cachedNode)
 	} else {
 		// 缓存未命中，从 DB 读取完整数据
@@ -322,6 +579,11 @@ func BatchAddNodes(nodes []Node) error {
 	if len(nodes) == 0 {
 		return nil
 	}
+	reservedNames := make(map[string]bool, len(nodes))
+	for i := range nodes {
+		nodes[i].NormalizeNameModeDefaults()
+		nodes[i].Name = GenerateUniqueNodeNameWithSource(nodes[i].Name, nodes[i].Source, nodes[i].ID, reservedNames)
+	}
 
 	// 分块处理
 	chunks := chunkNodes(nodes, database.BatchSize)
@@ -329,6 +591,7 @@ func BatchAddNodes(nodes []Node) error {
 
 	for chunkIdx, chunk := range chunks {
 		for i := range chunk {
+			chunk[i].NormalizeNameModeDefaults()
 			chunk[i].syncLinkHash()
 		}
 		// 尝试批量插入
@@ -361,6 +624,7 @@ func BatchAddNodes(nodes []Node) error {
 func fallbackToIndividualNodeInsert(nodes []Node) int {
 	insertedCount := 0
 	for i := range nodes {
+		nodes[i].NormalizeNameModeDefaults()
 		nodes[i].syncLinkHash()
 		// 使用 ON CONFLICT DO NOTHING 跳过已存在的节点
 		result := database.DB.Clauses(clause.OnConflict{
@@ -506,7 +770,7 @@ func tryBatchUpdateWithCaseWhen(chunk []SpeedTestResult, skipSpeed bool) (int, e
 		sb.WriteString(field.column)
 		sb.WriteString(" = CASE id ")
 		for _, r := range chunk {
-			sb.WriteString(fmt.Sprintf("WHEN %d THEN %s ", r.NodeID, field.valueFunc(r)))
+			fmt.Fprintf(&sb, "WHEN %d THEN %s ", r.NodeID, field.valueFunc(r))
 		}
 		sb.WriteString("END")
 	}
@@ -517,7 +781,7 @@ func tryBatchUpdateWithCaseWhen(chunk []SpeedTestResult, skipSpeed bool) (int, e
 		if i > 0 {
 			sb.WriteString(",")
 		}
-		sb.WriteString(fmt.Sprintf("%d", r.NodeID))
+		fmt.Fprintf(&sb, "%d", r.NodeID)
 	}
 	sb.WriteString(")")
 
@@ -568,7 +832,7 @@ func batchUpdateNodeCache(chunk []SpeedTestResult, skipSpeed bool) {
 func fallbackToIndividualSpeedUpdate(chunk []SpeedTestResult, skipSpeed bool) int {
 	successCount := 0
 	for _, r := range chunk {
-		updates := map[string]interface{}{
+		updates := map[string]any{
 			"delay_time":       r.DelayTime,
 			"delay_status":     r.DelayStatus,
 			"latency_check_at": r.LatencyCheckAt,
@@ -922,9 +1186,11 @@ func (node *Node) ListWithFilters(filter NodeFilter) ([]Node, error) {
 
 		// 搜索过滤
 		if searchLower != "" {
-			nameLower := strings.ToLower(n.Name)
+			nameLower := strings.ToLower(n.EffectiveName())
+			remarkLower := strings.ToLower(n.Name)
+			linkNameLower := strings.ToLower(n.LinkName)
 			linkLower := strings.ToLower(n.Link)
-			if !strings.Contains(nameLower, searchLower) && !strings.Contains(linkLower, searchLower) && !MatchUnlockSummary(unlockSummary, "", "", searchLower) {
+			if !strings.Contains(nameLower, searchLower) && !strings.Contains(remarkLower, searchLower) && !strings.Contains(linkNameLower, searchLower) && !strings.Contains(linkLower, searchLower) && !MatchUnlockSummary(unlockSummary, "", "", searchLower) {
 				return false
 			}
 		}
@@ -1235,11 +1501,15 @@ func (node *Node) Del() error {
 
 // UpsertNode 插入或更新节点
 func (node *Node) UpsertNode() error {
+	node.NormalizeNameModeDefaults()
+	if err := EnsureNodeNameAvailable(node.Name, node.ID); err != nil {
+		return err
+	}
 	node.syncLinkHash()
 	// Write-Through: 先写数据库
 	err := database.DB.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "link_hash"}},
-		DoUpdates: clause.AssignmentColumns([]string{"link", "name", "link_name", "link_address", "link_host", "link_port", "link_country", "source", "source_id", "group"}),
+		DoUpdates: clause.AssignmentColumns([]string{"link", "link_hash", "name", "name_mode", "link_name", "link_address", "link_host", "link_port", "link_country", "source", "source_id", "group"}),
 	}).Create(node).Error
 	if err != nil {
 		return err
@@ -1480,7 +1750,7 @@ func ListBySourceID(sourceID int) ([]Node, error) {
 // UpdateNodesBySourceID 根据订阅ID批量更新节点的来源名称和分组
 func UpdateNodesBySourceID(sourceID int, sourceName string, group string) error {
 	// Write-Through: 先更新数据库
-	updateFields := map[string]interface{}{
+	updateFields := map[string]any{
 		"source": sourceName,
 		"group":  group,
 	}
@@ -1498,47 +1768,354 @@ func UpdateNodesBySourceID(sourceID int, sourceName string, group string) error 
 	return nil
 }
 
-// NodeInfoUpdate 节点信息更新项（用于订阅拉取时批量更新名称/链接）
+// NodeInfoUpdate 节点信息更新项（用于订阅拉取时批量更新原始名称/链接）。
 type NodeInfoUpdate struct {
-	ID         int
-	Name       string
-	LinkName   string
-	Link       string
-	SourceSort int
+	ID              int
+	Name            string
+	LinkName        string
+	Link            string
+	SourceSort      int
+	Source          string
+	CurrentName     string
+	CurrentLinkName string
+	NameMode        string
 }
 
-// BatchUpdateNodeInfo 批量更新节点的名称和链接信息
-// 用于订阅拉取时，节点配置未变但名称/链接发生变化的场景
+// BuildNodeInfoUpdate 根据现有节点生成订阅刷新更新项，保留名称同步所需上下文。
+func BuildNodeInfoUpdate(existing Node, linkName string, link string, sourceSort int) NodeInfoUpdate {
+	return NodeInfoUpdate{
+		ID:              existing.ID,
+		Name:            linkName,
+		LinkName:        linkName,
+		Link:            link,
+		SourceSort:      sourceSort,
+		Source:          existing.Source,
+		CurrentName:     existing.Name,
+		CurrentLinkName: existing.LinkName,
+		NameMode:        NormalizeNodeNameMode(existing.NameMode),
+	}
+}
+
+// BatchUpdateNodeInfo 批量更新节点的原始名称和链接信息。
+// 用于订阅拉取时，节点配置未变但原始名称/链接发生变化的场景；用户备注仅在 link 模式或历史等值同步状态下随原始名称刷新。
 func BatchUpdateNodeInfo(updates []NodeInfoUpdate) (int, error) {
 	if len(updates) == 0 {
 		return 0, nil
 	}
 
 	successCount := 0
-	for _, u := range updates {
-		err := database.DB.Model(&Node{}).Where("id = ?", u.ID).Updates(map[string]interface{}{
-			"name":        u.Name,
-			"link_name":   u.LinkName,
-			"link":        u.Link,
-			"source_sort": u.SourceSort,
-		}).Error
-		if err != nil {
-			utils.Warn("更新节点信息失败 ID=%d: %v", u.ID, err)
+	chunks := chunkNodeInfoUpdates(updates, database.BatchSize)
+	for chunkIdx, chunk := range chunks {
+		plans := prepareNodeInfoUpdatePlans(chunk)
+		batchSuccess, batchErr := tryBatchUpdateNodeInfoWithCaseWhen(plans)
+		if batchErr == nil {
+			successCount += batchSuccess
+			batchUpdateNodeInfoCache(plans)
 			continue
 		}
-		successCount++
 
-		// 同步更新缓存
-		if cachedNode, ok := nodeCache.Get(u.ID); ok {
-			cachedNode.Name = u.Name
-			cachedNode.LinkName = u.LinkName
-			cachedNode.Link = u.Link
-			cachedNode.SourceSort = u.SourceSort
-			nodeCache.Set(u.ID, cachedNode)
-		}
+		utils.Warn("分块 %d 节点信息批量更新失败，降级到逐条更新: %v", chunkIdx, batchErr)
+		successCount += fallbackToIndividualNodeInfoUpdate(chunk)
 	}
 
 	return successCount, nil
+}
+
+type nodeInfoUpdatePlan struct {
+	ID         int
+	Name       string
+	SyncName   bool
+	LinkName   string
+	Link       string
+	LinkHash   string
+	SourceSort int
+	UpdatedAt  time.Time
+}
+
+type nodeInfoNameState struct {
+	namesByID map[int]string
+	reserved  map[string]bool
+}
+
+func newNodeInfoNameState() *nodeInfoNameState {
+	state := &nodeInfoNameState{
+		namesByID: make(map[int]string),
+		reserved:  make(map[string]bool),
+	}
+	for _, node := range nodeCache.GetAll() {
+		state.namesByID[node.ID] = node.Name
+	}
+	return state
+}
+
+func (state *nodeInfoNameState) nameReserved(name string, excludeID int) bool {
+	trimmedName := normalizeNodeRemarkName(name)
+	if trimmedName == "" {
+		return false
+	}
+	if state.reserved[trimmedName] {
+		return true
+	}
+	for id, existingName := range state.namesByID {
+		if id != excludeID && normalizeNodeRemarkName(existingName) == trimmedName {
+			return true
+		}
+	}
+	return false
+}
+
+func (state *nodeInfoNameState) reserveNodeName(id int, name string) string {
+	state.namesByID[id] = name
+	state.reserved[name] = true
+	return name
+}
+
+func (state *nodeInfoNameState) uniqueNodeNameWithBase(baseName string, excludeID int) string {
+	baseName = normalizeNodeRemarkName(baseName)
+	if baseName == "" {
+		baseName = "未命名节点"
+	}
+	if !state.nameReserved(baseName, excludeID) {
+		return state.reserveNodeName(excludeID, baseName)
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", baseName, suffix)
+		if !state.nameReserved(candidate, excludeID) {
+			return state.reserveNodeName(excludeID, candidate)
+		}
+	}
+}
+
+func (state *nodeInfoNameState) uniqueNodeNameWithSource(baseName string, sourceName string, excludeID int) string {
+	baseName = normalizeNodeRemarkName(baseName)
+	if baseName == "" {
+		baseName = "未命名节点"
+	}
+	if !state.nameReserved(baseName, excludeID) {
+		return state.reserveNodeName(excludeID, baseName)
+	}
+	sourceName = normalizeNodeRemarkName(sourceName)
+	if sourceName != "" && sourceName != "manual" {
+		return state.uniqueNodeNameWithBase(baseName+"@"+sourceName, excludeID)
+	}
+	return state.uniqueNodeNameWithBase(baseName, excludeID)
+}
+
+func (state *nodeInfoNameState) setNodeName(id int, name string) {
+	state.namesByID[id] = name
+}
+
+func prepareNodeInfoUpdatePlans(updates []NodeInfoUpdate) []nodeInfoUpdatePlan {
+	updatedAt := currentDBTime()
+	nameState := newNodeInfoNameState()
+	plans := make([]nodeInfoUpdatePlan, 0, len(updates))
+	for _, update := range updates {
+		plans = append(plans, prepareNodeInfoUpdatePlan(update, nameState, updatedAt))
+	}
+	return plans
+}
+
+func prepareNodeInfoUpdatePlan(update NodeInfoUpdate, nameState *nodeInfoNameState, updatedAt time.Time) nodeInfoUpdatePlan {
+	existing := Node{Name: update.CurrentName, LinkName: update.CurrentLinkName, NameMode: update.NameMode}
+	if cachedNode, ok := nodeCache.Get(update.ID); ok {
+		if existing.Name == "" {
+			existing.Name = cachedNode.Name
+		}
+		if existing.LinkName == "" {
+			existing.LinkName = cachedNode.LinkName
+		}
+		if existing.NameMode == "" {
+			existing.NameMode = cachedNode.NameMode
+		}
+	}
+
+	syncName := existing.ShouldSyncNameFromLink()
+	newName := existing.NameAfterLinkNameUpdate(update.LinkName)
+	if syncName {
+		if nameState != nil {
+			newName = nameState.uniqueNodeNameWithSource(newName, update.Source, update.ID)
+		} else {
+			newName = GenerateUniqueNodeNameWithSource(newName, update.Source, update.ID, nil)
+		}
+	} else if nameState != nil {
+		nameState.setNodeName(update.ID, existing.Name)
+	}
+
+	return nodeInfoUpdatePlan{
+		ID:         update.ID,
+		Name:       newName,
+		SyncName:   syncName,
+		LinkName:   update.LinkName,
+		Link:       update.Link,
+		LinkHash:   hashNodeLink(update.Link),
+		SourceSort: update.SourceSort,
+		UpdatedAt:  updatedAt,
+	}
+}
+
+func currentDBTime() time.Time {
+	if database.DB != nil && database.DB.NowFunc != nil {
+		return database.DB.NowFunc()
+	}
+	return time.Now()
+}
+
+func tryBatchUpdateNodeInfoWithCaseWhen(plans []nodeInfoUpdatePlan) (int, error) {
+	if len(plans) == 0 {
+		return 0, nil
+	}
+	if hasDuplicateNodeInfoUpdateID(plans) {
+		return 0, errors.New("duplicate node IDs in node info update chunk")
+	}
+
+	var sb strings.Builder
+	args := make([]any, 0, len(plans)*5+1)
+	sb.WriteString("UPDATE nodes SET ")
+
+	first := true
+	appendCaseColumn := func(column string, value func(nodeInfoUpdatePlan) any) {
+		if !first {
+			sb.WriteString(", ")
+		}
+		first = false
+		sb.WriteString(column)
+		sb.WriteString(" = CASE id ")
+		for _, plan := range plans {
+			fmt.Fprintf(&sb, "WHEN %d THEN ? ", plan.ID)
+			args = append(args, value(plan))
+		}
+		sb.WriteString("ELSE ")
+		sb.WriteString(column)
+		sb.WriteString(" END")
+	}
+
+	appendCaseColumn("link_name", func(plan nodeInfoUpdatePlan) any { return plan.LinkName })
+	appendCaseColumn("link", func(plan nodeInfoUpdatePlan) any { return plan.Link })
+	appendCaseColumn("link_hash", func(plan nodeInfoUpdatePlan) any { return plan.LinkHash })
+	appendCaseColumn("source_sort", func(plan nodeInfoUpdatePlan) any { return plan.SourceSort })
+	if hasSyncedNodeInfoName(plans) {
+		if !first {
+			sb.WriteString(", ")
+		}
+		first = false
+		sb.WriteString("name = CASE id ")
+		for _, plan := range plans {
+			if !plan.SyncName {
+				continue
+			}
+			fmt.Fprintf(&sb, "WHEN %d THEN ? ", plan.ID)
+			args = append(args, plan.Name)
+		}
+		sb.WriteString("ELSE name END")
+	}
+	sb.WriteString(", updated_at = ?")
+	args = append(args, plans[0].UpdatedAt)
+
+	sb.WriteString(" WHERE id IN (")
+	for i, plan := range plans {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, "%d", plan.ID)
+	}
+	sb.WriteString(")")
+
+	result := database.DB.Exec(sb.String(), args...)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	if int(result.RowsAffected) != len(plans) {
+		return 0, fmt.Errorf("节点信息批量更新影响行数不匹配: got %d, want %d", result.RowsAffected, len(plans))
+	}
+	return int(result.RowsAffected), nil
+}
+
+func hasSyncedNodeInfoName(plans []nodeInfoUpdatePlan) bool {
+	for _, plan := range plans {
+		if plan.SyncName {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDuplicateNodeInfoUpdateID(plans []nodeInfoUpdatePlan) bool {
+	seen := make(map[int]bool, len(plans))
+	for _, plan := range plans {
+		if seen[plan.ID] {
+			return true
+		}
+		seen[plan.ID] = true
+	}
+	return false
+}
+
+func batchUpdateNodeInfoCache(plans []nodeInfoUpdatePlan) {
+	for _, plan := range plans {
+		updateNodeInfoCache(plan)
+	}
+}
+
+func updateNodeInfoCache(plan nodeInfoUpdatePlan) {
+	if cachedNode, ok := nodeCache.Get(plan.ID); ok {
+		if plan.SyncName {
+			cachedNode.Name = plan.Name
+		}
+		cachedNode.LinkName = plan.LinkName
+		cachedNode.Link = plan.Link
+		cachedNode.LinkHash = plan.LinkHash
+		cachedNode.SourceSort = plan.SourceSort
+		cachedNode.UpdatedAt = plan.UpdatedAt
+		cachedNode.NameMode = NormalizeNodeNameMode(cachedNode.NameMode)
+		cachedNode.EffectiveNameValue = cachedNode.EffectiveName()
+		nodeCache.Set(plan.ID, cachedNode)
+	}
+}
+
+func fallbackToIndividualNodeInfoUpdate(updates []NodeInfoUpdate) int {
+	successCount := 0
+	for _, update := range updates {
+		plan := prepareNodeInfoUpdatePlan(update, nil, currentDBTime())
+		fields := map[string]any{
+			"link_name":   plan.LinkName,
+			"link":        plan.Link,
+			"link_hash":   plan.LinkHash,
+			"source_sort": plan.SourceSort,
+			"updated_at":  plan.UpdatedAt,
+		}
+		if plan.SyncName {
+			fields["name"] = plan.Name
+		}
+
+		result := database.DB.Model(&Node{}).Where("id = ?", plan.ID).Updates(fields)
+		if result.Error != nil {
+			utils.Warn("更新节点信息失败 ID=%d: %v", plan.ID, result.Error)
+			continue
+		}
+		if result.RowsAffected == 0 {
+			utils.Warn("更新节点信息失败 ID=%d: 未找到对应节点", plan.ID)
+			continue
+		}
+		successCount++
+		updateNodeInfoCache(plan)
+	}
+	return successCount
+}
+
+func chunkNodeInfoUpdates(updates []NodeInfoUpdate, chunkSize int) [][]NodeInfoUpdate {
+	if chunkSize <= 0 {
+		chunkSize = database.BatchSize
+	}
+
+	var chunks [][]NodeInfoUpdate
+	for i := 0; i < len(updates); i += chunkSize {
+		end := i + chunkSize
+		if end > len(updates) {
+			end = len(updates)
+		}
+		chunks = append(chunks, updates[i:end])
+	}
+	return chunks
 }
 
 // GetFastestSpeedNode 获取最快速度节点
@@ -1681,6 +2258,11 @@ func GetNodeByName(name string) (*Node, bool) {
 	nodes := nodeCache.GetByIndex("name", name)
 	if len(nodes) > 0 {
 		return &nodes[0], true
+	}
+	for _, node := range nodeCache.GetAll() {
+		if node.EffectiveName() == name || node.LinkName == name {
+			return &node, true
+		}
 	}
 	return nil, false
 }
@@ -2048,6 +2630,7 @@ func InitNodeFieldsMeta() {
 		"ID": true, "Link": true, "CreatedAt": true, "UpdatedAt": true,
 		"Tags": true, "SpeedCheckAt": true, "LatencyCheckAt": true,
 		"Speed": true, "DelayTime": true, "SpeedStatus": true, "DelayStatus": true,
+		"EffectiveNameValue": true,
 	}
 
 	// 字段中文标签映射
@@ -2112,6 +2695,10 @@ func GetNodeFieldsMeta() []NodeFieldMeta {
 
 // GetFieldValue 根据字段名获取节点字段值（使用反射）
 func (node *Node) GetFieldValue(fieldName string) string {
+	switch fieldName {
+	case "Name", "name", "EffectiveName", "effective_name":
+		return node.EffectiveName()
+	}
 	v := reflect.ValueOf(*node)
 	f := v.FieldByName(fieldName)
 	if !f.IsValid() {

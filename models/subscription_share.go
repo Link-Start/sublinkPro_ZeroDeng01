@@ -9,6 +9,8 @@ import (
 	"sublink/database"
 	"sublink/utils"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // 过期类型常量
@@ -129,7 +131,7 @@ func (s *SubscriptionShare) Add() error {
 
 	// 检查 token 唯一性
 	if IsTokenExists(s.Token, 0) {
-		return fmt.Errorf("Token 已被使用，请更换")
+		return fmt.Errorf("token 已被使用，请更换")
 	}
 
 	err := database.DB.Create(s).Error
@@ -146,10 +148,10 @@ func (s *SubscriptionShare) Update() error {
 
 	// 检查 token 唯一性（排除自己）
 	if IsTokenExists(s.Token, s.ID) {
-		return fmt.Errorf("Token 已被使用，请更换")
+		return fmt.Errorf("token 已被使用，请更换")
 	}
 
-	err := database.DB.Model(s).Updates(map[string]interface{}{
+	err := database.DB.Model(s).Updates(map[string]any{
 		"name":        s.Name,
 		"token":       s.Token,
 		"expire_type": s.ExpireType,
@@ -258,16 +260,43 @@ func (s *SubscriptionShare) IsExpired() bool {
 	}
 }
 
-// RecordAccess 记录一次访问
+// RecordAccess 记录一次访问，并使用数据库原子自增避免并发访问丢失计数。
 func (s *SubscriptionShare) RecordAccess() {
-	s.AccessCount++
+	if s == nil || s.ID <= 0 {
+		return
+	}
+
 	now := time.Now()
-	s.LastAccessAt = &now
-	database.DB.Model(s).Updates(map[string]interface{}{
-		"access_count":   s.AccessCount,
-		"last_access_at": s.LastAccessAt,
-	})
-	subscriptionShareCache.Set(s.ID, *s)
+	if err := database.DB.Model(&SubscriptionShare{}).
+		Where("id = ?", s.ID).
+		Updates(map[string]any{
+			"access_count":   gorm.Expr("access_count + ?", 1),
+			"last_access_at": &now,
+		}).Error; err != nil {
+		utils.Warn("记录订阅分享访问失败: %v", err)
+		return
+	}
+
+	var updated SubscriptionShare
+	if err := database.DB.First(&updated, s.ID).Error; err != nil {
+		utils.Warn("刷新订阅分享访问缓存失败: %v", err)
+		return
+	}
+	*s = updated
+	subscriptionShareCache.Set(updated.ID, updated)
+}
+
+// RecordAccessAsync 异步记录一次访问，避免订阅拉取热路径等待数据库写入。
+func (s *SubscriptionShare) RecordAccessAsync() {
+	if s == nil || s.ID <= 0 {
+		return
+	}
+
+	shareID := s.ID
+	go func() {
+		share := SubscriptionShare{ID: shareID}
+		share.RecordAccess()
+	}()
 }
 
 // List 获取所有分享列表

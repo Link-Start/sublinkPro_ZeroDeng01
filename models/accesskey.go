@@ -116,9 +116,8 @@ func (accessKey *AccessKey) Delete() error {
 // GenerateAPIKey 生成一个新的 API Key,单用户系统直接全随机不编码用户信息
 func (accessKey *AccessKey) GenerateAPIKey() (string, error) {
 	// 优先使用 config 包获取加密密钥
-	encryptionKey := ""
 	cfg := ReadConfig()
-	encryptionKey = cfg.APIEncryptionKey
+	encryptionKey := cfg.APIEncryptionKey
 
 	encryptedID, err := utils.EncryptUserIDCompact(accessKey.UserID, []byte(encryptionKey))
 	if err != nil {
@@ -195,7 +194,9 @@ func StartAccessKeyCleanupScheduler() {
 						utils.Error("AccessKey 清理任务异常: %v", r)
 					}
 				}()
-				CleanupExpiredAccessKeys()
+				if err := CleanupExpiredAccessKeys(); err != nil {
+					utils.Error("AccessKey 清理失败: %v", err)
+				}
 			}()
 		}
 	}()
@@ -207,6 +208,8 @@ func StartAccessKeyCleanupScheduler() {
 				utils.Error("AccessKey 初始清理任务异常: %v", r)
 			}
 		}()
-		CleanupExpiredAccessKeys()
+		if err := CleanupExpiredAccessKeys(); err != nil {
+			utils.Error("AccessKey 初始清理失败: %v", err)
+		}
 	}()
 }

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import PropTypes from 'prop-types';
+import { useTranslation } from 'react-i18next';
 
 // material-ui
 import { useTheme, alpha } from '@mui/material/styles';
@@ -34,6 +35,7 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 
 // utils
 import { formatDateTime, formatBytes, formatExpireTime, getUsageColor } from '../utils';
+import { withAlpha } from 'utils/colorUtils';
 
 // local components
 import AirportNodeStatsCard from './AirportNodeStatsCard';
@@ -51,11 +53,79 @@ export default function AirportListView({
   onPull,
   onOpenNodes,
   onQuickCheck,
-  onRefreshUsage
+  onRefreshUsage,
+  nodeCheckProfiles
 }) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const palette = theme.vars?.palette || theme.palette;
   const { isDark } = useResolvedColorScheme();
+
+  // 根据检测策略ID查找策略名称
+  const getDetectProfileName = (profileId) => {
+    if (!profileId || profileId === 0) return null;
+    const profile = nodeCheckProfiles.find((p) => p.id === profileId);
+    return profile ? profile.name : null;
+  };
+
+  const tableContainerSx = {
+    bgcolor: isDark ? withAlpha(palette.common.black, 0.2) : palette.background.paper,
+    backgroundImage: 'none',
+    border: '1px solid',
+    borderColor: palette.divider,
+    boxShadow: isDark ? `inset 0 1px 0 ${withAlpha(palette.common.white, 0.02)}` : `0 6px 18px ${withAlpha(palette.common.black, 0.04)}`,
+    borderRadius: 2.5,
+    width: '100%',
+    overflowX: 'auto',
+    overflowY: 'hidden'
+  };
+
+  const tableSx = {
+    minWidth: 820,
+    width: '100%',
+    '& .MuiTableCell-root': {
+      px: 1,
+      py: 1,
+      whiteSpace: 'nowrap',
+      verticalAlign: 'middle'
+    },
+    '& .MuiTableCell-paddingCheckbox': {
+      px: 0.5,
+      py: 0.5,
+      verticalAlign: 'middle'
+    },
+    '& .MuiTableCell-paddingCheckbox .MuiCheckbox-root': {
+      p: 0.5,
+      display: 'flex',
+      alignItems: 'center'
+    }
+  };
+
+  const tableHeadSx = {
+    bgcolor: 'transparent',
+    '& th, & .MuiTableCell-root': {
+      fontWeight: 600,
+      color: isDark ? withAlpha(palette.common.white, 0.85) : palette.text.secondary,
+      fontSize: '0.75rem',
+      py: 1.1,
+      px: 1,
+      borderBottom: `1px solid ${palette.divider}`
+    }
+  };
+
+  const getTableRowSx = (selected = false) => ({
+    bgcolor: selected ? withAlpha(palette.primary.main, isDark ? 0.16 : 0.08) : 'transparent',
+    cursor: 'pointer',
+    transition: 'background-color 0.2s ease',
+    '&:hover': {
+      bgcolor: withAlpha(palette.primary.main, selected ? (isDark ? 0.2 : 0.12) : isDark ? 0.08 : 0.04)
+    },
+    '& td, & .MuiTableCell-root': {
+      py: 0.85,
+      px: 1,
+      borderBottom: `1px solid ${palette.divider}`
+    }
+  });
 
   // 复制提示状态
   const [copyTip, setCopyTip] = useState({ open: false, name: '' });
@@ -90,44 +160,13 @@ export default function AirportListView({
   };
 
   /**
-   * 计算行背景色
-   */
-  const getRowBgColor = (airport) => {
-    if (!airport.enabled) {
-      return alpha(theme.palette.grey[500], 0.05);
-    }
-
-    // 检查用量警告（>= 85%）
-    if (airport.fetchUsageInfo && airport.usageTotal > 0) {
-      const upload = airport.usageUpload || 0;
-      const download = airport.usageDownload || 0;
-      const used = upload + download;
-      const percent = (used / airport.usageTotal) * 100;
-      if (percent >= 85) {
-        return alpha(theme.palette.error.main, 0.05);
-      }
-    }
-
-    // 检查过期警告（7天内）
-    if (airport.usageExpire > 0) {
-      const now = Math.floor(Date.now() / 1000);
-      const daysLeft = (airport.usageExpire - now) / (24 * 60 * 60);
-      if (daysLeft <= 7) {
-        return alpha(theme.palette.error.main, 0.05);
-      }
-    }
-
-    return 'transparent';
-  };
-
-  /**
    * 渲染用量信息（紧凑版）
    */
   const renderUsageCompact = (airport) => {
     if (!airport.fetchUsageInfo) {
       return (
         <Typography variant="caption" color="text.disabled">
-          未开启
+          {t('airports.list.usage.disabledShort')}
         </Typography>
       );
     }
@@ -135,7 +174,7 @@ export default function AirportListView({
     if (airport.usageTotal === -1) {
       return (
         <Typography variant="caption" color="error.main">
-          获取失败
+          {t('airports.list.usage.failedShort')}
         </Typography>
       );
     }
@@ -143,7 +182,7 @@ export default function AirportListView({
     if (!airport.usageTotal || airport.usageTotal === 0) {
       return (
         <Typography variant="caption" color="text.disabled">
-          待获取
+          {t('airports.list.usage.pending')}
         </Typography>
       );
     }
@@ -174,7 +213,7 @@ export default function AirportListView({
             }}
           >
             {formatExpireTime(airport.usageExpire)}
-            {isUrgent && ` (${Math.max(0, Math.ceil(daysLeft))}天)`}
+            {isUrgent && ` (${t('airports.list.usage.daysLeft', { count: Math.max(0, Math.ceil(daysLeft)) })})`}
           </Typography>
         </Box>
       );
@@ -222,7 +261,7 @@ export default function AirportListView({
     if (!hasData) {
       return (
         <Typography variant="caption" color="text.disabled" sx={{ fontStyle: 'italic' }}>
-          暂未测试
+          {t('airports.list.speed.untested')}
         </Typography>
       );
     }
@@ -310,7 +349,7 @@ export default function AirportListView({
     return (
       <Box sx={{ py: 6, textAlign: 'center' }}>
         <Typography variant="body2" color="text.secondary">
-          暂无机场数据，点击上方"添加机场"按钮添加
+          {t('airports.list.empty.addAirport')}
         </Typography>
       </Box>
     );
@@ -318,293 +357,308 @@ export default function AirportListView({
 
   return (
     <>
-      <Box
-        sx={{
-          borderRadius: 2,
-          border: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
-          overflow: 'hidden'
-        }}
-      >
-        <TableContainer
-          sx={{
-            width: '100%',
-            overflowX: 'auto',
-            overflowY: 'hidden'
-          }}
-        >
-          <Table
-            size="small"
-            sx={{
-              minWidth: 820,
-              width: '100%'
-            }}
-          >
-            <TableHead>
-              <TableRow
-                sx={{
-                  bgcolor: alpha(theme.palette.primary.main, 0.04),
-                  '& th': {
-                    fontWeight: 600,
-                    color: 'text.secondary',
-                    fontSize: '0.75rem',
-                    py: 1.1,
-                    px: 1,
-                    borderBottom: `1px solid ${alpha(theme.palette.divider, 0.1)}`
-                  }
-                }}
-              >
-                <TableCell sx={{ width: 48 }} align="center">
-                  选择
-                </TableCell>
-                <TableCell sx={{ width: '17%', minWidth: 160 }}>机场</TableCell>
-                <TableCell sx={{ width: '6%' }} align="center">
-                  状态
-                </TableCell>
-                <TableCell sx={{ width: '6%' }} align="center">
-                  节点
-                </TableCell>
-                <TableCell sx={{ width: '9%', minWidth: 96 }}>调度</TableCell>
-                <TableCell sx={{ width: '14%', minWidth: 158 }}>运行时间</TableCell>
-                <TableCell sx={{ width: '17%', minWidth: 145 }}>用量</TableCell>
-                <TableCell sx={{ width: '10%', minWidth: 100 }}>测速</TableCell>
-                <TableCell sx={{ width: 188 }} align="center">
-                  操作
-                </TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {airports.map((airport) => {
-                const isSelected = selectedIds.includes(airport.id);
+      <TableContainer sx={tableContainerSx}>
+        <Table size="small" sx={tableSx}>
+          <TableHead sx={tableHeadSx}>
+            <TableRow>
+              <TableCell sx={{ width: 48 }} align="center" padding="checkbox">
+                {t('airports.table.columns.select')}
+              </TableCell>
+              <TableCell sx={{ width: '17%', minWidth: 160 }}>{t('airports.table.columns.airport')}</TableCell>
+              <TableCell sx={{ width: '6%' }} align="center">
+                {t('common.status')}
+              </TableCell>
+              <TableCell sx={{ width: '6%' }} align="center">
+                {t('airports.table.columns.nodes')}
+              </TableCell>
+              <TableCell sx={{ width: '9%', minWidth: 96 }}>{t('airports.table.columns.schedule')}</TableCell>
+              <TableCell sx={{ width: '14%', minWidth: 158 }}>{t('airports.table.columns.runTime')}</TableCell>
+              <TableCell sx={{ width: '17%', minWidth: 145 }}>{t('airports.table.columns.usage')}</TableCell>
+              <TableCell sx={{ width: '10%', minWidth: 100 }}>{t('airports.table.columns.speedTest')}</TableCell>
+              <TableCell sx={{ width: '8%', minWidth: 90 }} align="center">
+                {t('airports.list.updateAfterDetect.title')}
+              </TableCell>
+              <TableCell sx={{ width: 188 }} align="center">
+                {t('airports.table.columns.actions')}
+              </TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {airports.map((airport) => {
+              const isSelected = selectedIds.includes(airport.id);
 
-                return (
-                  <TableRow
-                    key={airport.id}
-                    sx={{
-                      bgcolor: isSelected ? alpha(theme.palette.primary.main, 0.08) : getRowBgColor(airport),
-                      '&:hover': {
-                        bgcolor: isSelected ? alpha(theme.palette.primary.main, 0.12) : alpha(theme.palette.primary.main, 0.04)
-                      },
-                      '& td': {
-                        py: 0.85,
-                        px: 1,
-                        borderBottom: `1px solid ${alpha(theme.palette.divider, 0.06)}`
-                      }
-                    }}
-                  >
-                    <TableCell align="center">
-                      <Checkbox checked={isSelected} onChange={() => onToggleSelect(airport.id)} size="small" />
-                    </TableCell>
-                    {/* 机场名称 + Logo + 分组 */}
-                    <TableCell>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                        <AirportLogo logo={airport.logo} name={airport.name} size="small" />
-                        <Box sx={{ minWidth: 0, flex: 1 }}>
-                          <Typography
-                            variant="body2"
-                            fontWeight={600}
-                            sx={{
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              maxWidth: 132,
-                              lineHeight: 1.2
-                            }}
-                          >
-                            {airport.name}
-                          </Typography>
-                          {airport.group && (
-                            <Chip
-                              label={airport.group}
-                              variant="outlined"
-                              size="small"
-                              sx={{ height: 16, fontSize: '0.6rem', mt: 0.2, '& .MuiChip-label': { px: 0.6 } }}
-                            />
-                          )}
-                        </Box>
-                      </Box>
-                    </TableCell>
-
-                    {/* 状态 */}
-                    <TableCell align="center">
-                      <Chip label={airport.enabled ? '启用' : '禁用'} variant="filled" size="small" sx={getStatusChipSx(airport.enabled)} />
-                    </TableCell>
-
-                    {/* 节点数 */}
-                    <TableCell align="center">
-                      <Typography variant="body2" fontWeight={500} color="primary.main">
-                        {airport.nodeCount || 0}
-                      </Typography>
-                    </TableCell>
-
-                    {/* 调度 */}
-                    <TableCell>
-                      <Tooltip title={`Cron: ${airport.cronExpr}`} arrow>
+              return (
+                <TableRow key={airport.id} sx={getTableRowSx(isSelected)}>
+                  <TableCell align="center">
+                    <Checkbox checked={isSelected} onChange={() => onToggleSelect(airport.id)} size="small" />
+                  </TableCell>
+                  {/* 机场名称 + Logo + 分组 */}
+                  <TableCell>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <AirportLogo logo={airport.logo} name={airport.name} size="small" />
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
                         <Typography
-                          variant="caption"
+                          variant="body2"
+                          fontWeight={600}
                           sx={{
-                            fontFamily: 'monospace',
-                            fontSize: '0.7rem',
-                            color: 'text.secondary',
-                            display: 'block',
-                            maxWidth: 84,
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap'
+                            whiteSpace: 'nowrap',
+                            maxWidth: 132,
+                            lineHeight: 1.2
                           }}
                         >
-                          {airport.cronExpr}
+                          {airport.name}
                         </Typography>
-                      </Tooltip>
-                    </TableCell>
-
-                    {/* 运行时间 */}
-                    <TableCell>
-                      <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="caption" sx={{ fontSize: '0.64rem', color: 'text.secondary', display: 'block' }}>
-                          上次: {formatDateTime(airport.lastRunTime)}
-                        </Typography>
-                        <Typography variant="caption" sx={{ fontSize: '0.64rem', color: 'text.secondary', display: 'block' }}>
-                          下次: {formatDateTime(airport.nextRunTime)}
-                        </Typography>
+                        {airport.group && (
+                          <Chip
+                            label={airport.group}
+                            variant="outlined"
+                            size="small"
+                            sx={{ height: 16, fontSize: '0.6rem', mt: 0.2, '& .MuiChip-label': { px: 0.6 } }}
+                          />
+                        )}
                       </Box>
-                    </TableCell>
+                    </Box>
+                  </TableCell>
 
-                    {/* 用量 */}
-                    <TableCell>{renderUsageCompact(airport)}</TableCell>
+                  {/* 状态 */}
+                  <TableCell align="center">
+                    <Chip
+                      label={airport.enabled ? t('common.enabled') : t('common.disabled')}
+                      variant="filled"
+                      size="small"
+                      sx={getStatusChipSx(airport.enabled)}
+                    />
+                  </TableCell>
 
-                    {/* 测速 */}
-                    <TableCell>{renderSpeedCompact(airport.nodeStats, airport.nodeCount || 0)}</TableCell>
+                  {/* 节点数 */}
+                  <TableCell align="center">
+                    <Typography variant="body2" fontWeight={500} color="primary.main">
+                      {airport.nodeCount || 0}
+                    </Typography>
+                  </TableCell>
 
-                    {/* 操作按钮 */}
-                    <TableCell align="center">
-                      <Stack spacing={0.45} alignItems="center">
-                        <Stack direction="row" spacing={0.4} justifyContent="center" useFlexGap>
-                          <Tooltip title="查看节点" arrow>
+                  {/* 调度 */}
+                  <TableCell>
+                    <Tooltip title={`Cron: ${airport.cronExpr}`} arrow>
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontFamily: 'monospace',
+                          fontSize: '0.7rem',
+                          color: 'text.secondary',
+                          display: 'block',
+                          maxWidth: 84,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        {airport.cronExpr}
+                      </Typography>
+                    </Tooltip>
+                  </TableCell>
+
+                  {/* 运行时间 */}
+                  <TableCell>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="caption" sx={{ fontSize: '0.64rem', color: 'text.secondary', display: 'block' }}>
+                        {t('airports.table.lastRunCompact', { time: formatDateTime(airport.lastRunTime) })}
+                      </Typography>
+                      <Typography variant="caption" sx={{ fontSize: '0.64rem', color: 'text.secondary', display: 'block' }}>
+                        {t('airports.table.nextRunCompact', { time: formatDateTime(airport.nextRunTime) })}
+                      </Typography>
+                    </Box>
+                  </TableCell>
+
+                  {/* 用量 */}
+                  <TableCell>{renderUsageCompact(airport)}</TableCell>
+
+                  {/* 测速 */}
+                  <TableCell>{renderSpeedCompact(airport.nodeStats, airport.nodeCount || 0)}</TableCell>
+
+                  {/* 更新检测 */}
+                  <TableCell align="center">
+                    {airport.updateAfterDetect ? (
+                      (() => {
+                        const profileName = getDetectProfileName(airport.updateAfterDetectProfileId);
+                        const chip = profileName ? (
+                          <Chip
+                            label={profileName}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              fontWeight: 500,
+                              color: isDark ? palette.success.light : palette.success.dark,
+                              bgcolor: alpha(theme.palette.success.main, isDark ? 0.18 : 0.12),
+                              border: `1px solid ${alpha(theme.palette.success.main, isDark ? 0.34 : 0.18)}`,
+                              '& .MuiChip-label': { px: 0.8 }
+                            }}
+                          />
+                        ) : (
+                          <Chip
+                            label={t('airports.list.updateAfterDetect.deletedProfile')}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              fontWeight: 500,
+                              color: isDark ? palette.warning.light : palette.warning.dark,
+                              bgcolor: alpha(theme.palette.warning.main, isDark ? 0.18 : 0.12),
+                              border: `1px solid ${alpha(theme.palette.warning.main, isDark ? 0.34 : 0.18)}`,
+                              '& .MuiChip-label': { px: 0.8 }
+                            }}
+                          />
+                        );
+                        return (
+                          <Stack spacing={0.2} alignItems="center">
+                            {chip}
+                            {airport.updateAfterDetectChangedOnly && (
+                              <Typography variant="caption" sx={{ fontSize: '0.6rem', color: 'text.secondary', lineHeight: 1 }}>
+                                {t('airports.list.updateAfterDetect.changedOnly')}
+                              </Typography>
+                            )}
+                          </Stack>
+                        );
+                      })()
+                    ) : (
+                      <Typography variant="caption" color="text.disabled">
+                        -
+                      </Typography>
+                    )}
+                  </TableCell>
+
+                  {/* 操作按钮 */}
+                  <TableCell align="center">
+                    <Stack spacing={0.45} alignItems="center">
+                      <Stack direction="row" spacing={0.4} justifyContent="center" useFlexGap>
+                        <Tooltip title={t('airports.list.actions.viewNodes')} arrow>
+                          <IconButton
+                            size="small"
+                            aria-label={t('airports.list.actions.viewNodes')}
+                            onClick={() => onOpenNodes(airport)}
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              bgcolor: alpha(theme.palette.primary.main, 0.08),
+                              color: theme.palette.primary.main,
+                              '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.16) }
+                            }}
+                          >
+                            <LanIcon sx={{ fontSize: 15 }} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title={t('airports.list.actions.quickCheck')} arrow>
+                          <IconButton
+                            size="small"
+                            aria-label={t('airports.list.actions.quickCheck')}
+                            onClick={() => onQuickCheck(airport)}
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              bgcolor: alpha(theme.palette.primary.main, 0.08),
+                              color: theme.palette.primary.main,
+                              '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.16) }
+                            }}
+                          >
+                            <SpeedIcon sx={{ fontSize: 15 }} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title={t('airports.list.actions.pullNow')} arrow>
+                          <IconButton
+                            size="small"
+                            aria-label={t('airports.list.actions.pullNow')}
+                            onClick={() => onPull(airport)}
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              bgcolor: alpha(theme.palette.primary.main, 0.08),
+                              color: theme.palette.primary.main,
+                              '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.15) }
+                            }}
+                          >
+                            <DownloadIcon sx={{ fontSize: 14 }} />
+                          </IconButton>
+                        </Tooltip>
+                        {airport.fetchUsageInfo && (
+                          <Tooltip title={t('airports.list.actions.refreshUsage')} arrow>
                             <IconButton
                               size="small"
-                              aria-label="查看节点"
-                              onClick={() => onOpenNodes(airport)}
+                              aria-label={t('airports.list.actions.refreshUsage')}
+                              onClick={() => onRefreshUsage(airport)}
                               sx={{
                                 width: 28,
                                 height: 28,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
-                                '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.16) }
+                                bgcolor: alpha(theme.palette.success.main, 0.08),
+                                color: theme.palette.success.main,
+                                '&:hover': { bgcolor: alpha(theme.palette.success.main, 0.15) }
                               }}
                             >
-                              <LanIcon sx={{ fontSize: 15 }} />
+                              <AccountBalanceWalletIcon sx={{ fontSize: 14 }} />
                             </IconButton>
                           </Tooltip>
-                          <Tooltip title="快速检测" arrow>
-                            <IconButton
-                              size="small"
-                              aria-label="快速检测"
-                              onClick={() => onQuickCheck(airport)}
-                              sx={{
-                                width: 28,
-                                height: 28,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
-                                '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.16) }
-                              }}
-                            >
-                              <SpeedIcon sx={{ fontSize: 15 }} />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="立即拉取" arrow>
-                            <IconButton
-                              size="small"
-                              aria-label="立即拉取"
-                              onClick={() => onPull(airport)}
-                              sx={{
-                                width: 28,
-                                height: 28,
-                                bgcolor: alpha(theme.palette.primary.main, 0.08),
-                                color: theme.palette.primary.main,
-                                '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.15) }
-                              }}
-                            >
-                              <DownloadIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          </Tooltip>
-                          {airport.fetchUsageInfo && (
-                            <Tooltip title="刷新用量" arrow>
-                              <IconButton
-                                size="small"
-                                aria-label="刷新用量"
-                                onClick={() => onRefreshUsage(airport)}
-                                sx={{
-                                  width: 28,
-                                  height: 28,
-                                  bgcolor: alpha(theme.palette.success.main, 0.08),
-                                  color: theme.palette.success.main,
-                                  '&:hover': { bgcolor: alpha(theme.palette.success.main, 0.15) }
-                                }}
-                              >
-                                <AccountBalanceWalletIcon sx={{ fontSize: 14 }} />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                        </Stack>
-                        <Stack direction="row" spacing={0.4} justifyContent="center" useFlexGap>
-                          <Tooltip title="复制订阅" arrow>
-                            <IconButton
-                              size="small"
-                              aria-label="复制订阅"
-                              onClick={() => handleCopyUrl(airport)}
-                              sx={{
-                                width: 28,
-                                height: 28,
-                                bgcolor: alpha(theme.palette.secondary.main, 0.08),
-                                color: theme.palette.secondary.main,
-                                '&:hover': { bgcolor: alpha(theme.palette.secondary.main, 0.15) }
-                              }}
-                            >
-                              <ContentCopyIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="编辑" arrow>
-                            <IconButton
-                              size="small"
-                              aria-label="编辑"
-                              onClick={() => onEdit(airport)}
-                              sx={{
-                                width: 28,
-                                height: 28,
-                                bgcolor: alpha(theme.palette.info.main, 0.08),
-                                color: theme.palette.info.main,
-                                '&:hover': { bgcolor: alpha(theme.palette.info.main, 0.15) }
-                              }}
-                            >
-                              <EditIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          </Tooltip>
-                          <Tooltip title="删除" arrow>
-                            <IconButton
-                              size="small"
-                              aria-label="删除"
-                              onClick={() => onDelete(airport)}
-                              sx={{
-                                width: 28,
-                                height: 28,
-                                bgcolor: alpha(theme.palette.error.main, 0.08),
-                                color: theme.palette.error.main,
-                                '&:hover': { bgcolor: alpha(theme.palette.error.main, 0.15) }
-                              }}
-                            >
-                              <DeleteIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          </Tooltip>
-                        </Stack>
+                        )}
                       </Stack>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Box>
+                      <Stack direction="row" spacing={0.4} justifyContent="center" useFlexGap>
+                        <Tooltip title={t('airports.list.actions.copySubscription')} arrow>
+                          <IconButton
+                            size="small"
+                            aria-label={t('airports.list.actions.copySubscription')}
+                            onClick={() => handleCopyUrl(airport)}
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              bgcolor: alpha(theme.palette.secondary.main, 0.08),
+                              color: theme.palette.secondary.main,
+                              '&:hover': { bgcolor: alpha(theme.palette.secondary.main, 0.15) }
+                            }}
+                          >
+                            <ContentCopyIcon sx={{ fontSize: 14 }} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title={t('common.edit')} arrow>
+                          <IconButton
+                            size="small"
+                            aria-label={t('common.edit')}
+                            onClick={() => onEdit(airport)}
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              bgcolor: alpha(theme.palette.info.main, 0.08),
+                              color: theme.palette.info.main,
+                              '&:hover': { bgcolor: alpha(theme.palette.info.main, 0.15) }
+                            }}
+                          >
+                            <EditIcon sx={{ fontSize: 14 }} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title={t('common.delete')} arrow>
+                          <IconButton
+                            size="small"
+                            aria-label={t('common.delete')}
+                            onClick={() => onDelete(airport)}
+                            sx={{
+                              width: 28,
+                              height: 28,
+                              bgcolor: alpha(theme.palette.error.main, 0.08),
+                              color: theme.palette.error.main,
+                              '&:hover': { bgcolor: alpha(theme.palette.error.main, 0.15) }
+                            }}
+                          >
+                            <DeleteIcon sx={{ fontSize: 14 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </Stack>
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
       {/* 复制成功提示 */}
       <Snackbar
@@ -614,7 +668,7 @@ export default function AirportListView({
         anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
       >
         <Alert severity="success" variant="standard" sx={{ width: '100%' }}>
-          已复制「{copyTip.name}」的订阅地址
+          {t('airports.list.messages.copiedSubscriptionUrl', { name: copyTip.name })}
         </Alert>
       </Snackbar>
     </>
@@ -630,9 +684,11 @@ AirportListView.propTypes = {
   onPull: PropTypes.func.isRequired,
   onOpenNodes: PropTypes.func.isRequired,
   onQuickCheck: PropTypes.func.isRequired,
-  onRefreshUsage: PropTypes.func
+  onRefreshUsage: PropTypes.func,
+  nodeCheckProfiles: PropTypes.array
 };
 
 AirportListView.defaultProps = {
-  selectedIds: []
+  selectedIds: [],
+  nodeCheckProfiles: []
 };

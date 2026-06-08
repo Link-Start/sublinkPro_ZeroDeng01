@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/robfig/cron/v3"
-	"gorm.io/gorm"
 )
 
 // validateCron 验证5字段Cron表达式
@@ -20,6 +19,30 @@ func validateCron(expr string) bool {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	_, err := parser.Parse(expr)
 	return err == nil
+}
+
+func normalizeAirportRequestHeaders(headers []dto.AirportRequestHeader) (models.AirportRequestHeaders, error) {
+	normalized := make(models.AirportRequestHeaders, 0, len(headers))
+	for _, header := range headers {
+		key := strings.TrimSpace(header.Key)
+		value := strings.TrimSpace(header.Value)
+
+		if key == "" && value == "" {
+			continue
+		}
+		if key == "" {
+			return nil, errors.New("自定义 Header 的名称不能为空")
+		}
+		if strings.EqualFold(key, "User-Agent") {
+			return nil, errors.New("User-Agent 请使用专用字段设置")
+		}
+
+		normalized = append(normalized, models.AirportRequestHeader{
+			Key:   key,
+			Value: value,
+		})
+	}
+	return normalized, nil
 }
 
 // AirportWithStats 机场数据（包含节点统计）
@@ -151,27 +174,38 @@ func AirportAdd(c *gin.Context) {
 		return
 	}
 
+	requestHeaders, err := normalizeAirportRequestHeaders(req.RequestHeaders)
+	if err != nil {
+		utils.FailWithMsg(c, err.Error())
+		return
+	}
+
 	airport := models.Airport{
-		Name:               req.Name,
-		URL:                req.URL,
-		CronExpr:           req.CronExpr,
-		Enabled:            req.Enabled,
-		Group:              req.Group,
-		DownloadWithProxy:  req.DownloadWithProxy,
-		ProxyLink:          req.ProxyLink,
-		UserAgent:          req.UserAgent,
-		FetchUsageInfo:     req.FetchUsageInfo,
-		SkipTLSVerify:      req.SkipTLSVerify,
-		Remark:             req.Remark,
-		Logo:               req.Logo,
-		NodeNameWhitelist:  req.NodeNameWhitelist,
-		NodeNameBlacklist:  req.NodeNameBlacklist,
-		ProtocolWhitelist:  req.ProtocolWhitelist,
-		ProtocolBlacklist:  req.ProtocolBlacklist,
-		NodeNamePreprocess: req.NodeNamePreprocess,
-		DeduplicationRule:  req.DeduplicationRule,
-		NodeNameUniquify:   req.NodeNameUniquify,
-		NodeNamePrefix:     req.NodeNamePrefix,
+		Name:                         req.Name,
+		URL:                          req.URL,
+		CronExpr:                     req.CronExpr,
+		Enabled:                      req.Enabled,
+		Group:                        req.Group,
+		DownloadWithProxy:            req.DownloadWithProxy,
+		ProxyLink:                    req.ProxyLink,
+		UserAgent:                    req.UserAgent,
+		RequestHeaders:               requestHeaders,
+		FetchUsageInfo:               req.FetchUsageInfo,
+		SkipTLSVerify:                req.SkipTLSVerify,
+		UpdateAfterDetect:            req.UpdateAfterDetect,
+		UpdateAfterDetectProfileID:   req.UpdateAfterDetectProfileID,
+		UpdateAfterDetectChangedOnly: req.UpdateAfterDetectChangedOnly,
+		Remark:                       req.Remark,
+		Logo:                         req.Logo,
+		NodeNameWhitelist:            req.NodeNameWhitelist,
+		NodeNameBlacklist:            req.NodeNameBlacklist,
+		ProtocolWhitelist:            req.ProtocolWhitelist,
+		ProtocolBlacklist:            req.ProtocolBlacklist,
+		NodeNamePreprocess:           req.NodeNamePreprocess,
+		DeduplicationRule:            req.DeduplicationRule,
+		NodeNameUniquify:             req.NodeNameUniquify,
+		NodeNamePrefix:               req.NodeNamePrefix,
+		NodeNameIntraUniquify:        req.NodeNameIntraUniquify,
 	}
 
 	// 检查是否重复
@@ -221,6 +255,12 @@ func AirportUpdate(c *gin.Context) {
 		return
 	}
 
+	requestHeaders, err := normalizeAirportRequestHeaders(req.RequestHeaders)
+	if err != nil {
+		utils.FailWithMsg(c, err.Error())
+		return
+	}
+
 	// 检查是否存在
 	existing, err := models.GetAirportByID(id)
 	if err != nil {
@@ -228,13 +268,13 @@ func AirportUpdate(c *gin.Context) {
 		return
 	}
 
-	// 检查名称/URL是否与其他机场冲突
-	checkAirport := models.Airport{Name: req.Name, URL: req.URL}
-	if err := checkAirport.Find(); err == nil && checkAirport.ID != id {
-		utils.FailWithMsg(c, "机场已存在（名称或URL与其他机场重复）")
-		return
-	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	conflict, err := models.HasAirportIdentityConflict(id, req.Name, req.URL)
+	if err != nil {
 		utils.FailWithMsg(c, "更新失败")
+		return
+	}
+	if conflict {
+		utils.FailWithMsg(c, "机场已存在（名称或URL与其他机场重复）")
 		return
 	}
 
@@ -247,8 +287,12 @@ func AirportUpdate(c *gin.Context) {
 	existing.DownloadWithProxy = req.DownloadWithProxy
 	existing.ProxyLink = req.ProxyLink
 	existing.UserAgent = req.UserAgent
+	existing.RequestHeaders = requestHeaders
 	existing.FetchUsageInfo = req.FetchUsageInfo
 	existing.SkipTLSVerify = req.SkipTLSVerify
+	existing.UpdateAfterDetect = req.UpdateAfterDetect
+	existing.UpdateAfterDetectProfileID = req.UpdateAfterDetectProfileID
+	existing.UpdateAfterDetectChangedOnly = req.UpdateAfterDetectChangedOnly
 	existing.Remark = req.Remark
 	existing.Logo = req.Logo
 	existing.NodeNameWhitelist = req.NodeNameWhitelist
@@ -259,6 +303,7 @@ func AirportUpdate(c *gin.Context) {
 	existing.DeduplicationRule = req.DeduplicationRule
 	existing.NodeNameUniquify = req.NodeNameUniquify
 	existing.NodeNamePrefix = req.NodeNamePrefix
+	existing.NodeNameIntraUniquify = req.NodeNameIntraUniquify
 
 	if err := existing.Update(); err != nil {
 		utils.FailWithMsg(c, "更新失败: "+err.Error())
@@ -408,7 +453,7 @@ func AirportPullAll(c *gin.Context) {
 		return
 	}
 
-	utils.OkWithData(c, map[string]interface{}{
+	utils.OkWithData(c, map[string]any{
 		"message": "批量拉取任务已提交",
 		"count":   count,
 	})
@@ -442,7 +487,7 @@ func AirportRefreshUsage(c *gin.Context) {
 	}
 
 	// 返回用量信息
-	utils.OkDetailed(c, "用量信息已更新", map[string]interface{}{
+	utils.OkDetailed(c, "用量信息已更新", map[string]any{
 		"upload":   usageInfo.Upload,
 		"download": usageInfo.Download,
 		"total":    usageInfo.Total,

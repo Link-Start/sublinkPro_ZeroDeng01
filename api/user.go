@@ -37,18 +37,28 @@ func UserAdd(c *gin.Context) {
 func UserMe(c *gin.Context) {
 	// 获取jwt中的username
 	// 返回用户信息
-	username, _ := c.Get("username")
-	user := &models.User{Username: username.(string)}
+	username, ok := currentUsernameFromContext(c)
+	if !ok {
+		return
+	}
+	user := &models.User{Username: username}
 	err := user.Find()
 	if err != nil {
 		utils.FailWithMsg(c, err.Error())
 		return
 	}
+	aiSettings, aiSettingsErr := models.GetSystemAISettings()
+	aiEnabled := false
+	aiConfigured := false
+	if aiSettingsErr == nil {
+		aiEnabled = aiSettings.Enabled
+		aiConfigured = aiSettings.Configured
+	}
 	utils.OkDetailed(c, "获取用户信息成功", gin.H{
 		"avatar": "",
 		"ai": gin.H{
-			"enabled":    user.AIEnabled,
-			"configured": strings.TrimSpace(user.AIBaseURL) != "" && strings.TrimSpace(user.AIModel) != "" && strings.TrimSpace(user.AIAPIKeyEncrypted) != "",
+			"enabled":    aiEnabled,
+			"configured": aiConfigured,
 		},
 		"nickname": user.Nickname,
 		"userId":   user.ID,
@@ -66,8 +76,11 @@ func UserMe(c *gin.Context) {
 func UserPages(c *gin.Context) {
 	// 获取jwt中的username
 	// 返回用户信息
-	username, _ := c.Get("username")
-	user := &models.User{Username: username.(string)}
+	username, ok := currentUsernameFromContext(c)
+	if !ok {
+		return
+	}
+	user := &models.User{Username: username}
 	users, err := user.All()
 	if err != nil {
 		utils.Error("获取用户信息失败: %v", err)
@@ -95,8 +108,11 @@ func UserSet(c *gin.Context) {
 		utils.FailWithMsg(c, "用户名或密码不能为空")
 		return
 	}
-	username, _ := c.Get("username")
-	user := &models.User{Username: username.(string)}
+	username, ok := currentUsernameFromContext(c)
+	if !ok {
+		return
+	}
+	user := &models.User{Username: username}
 
 	// 先查找用户获取ID
 	if err := user.Find(); err != nil {
@@ -145,8 +161,11 @@ func UserChangePassword(c *gin.Context) {
 		return
 	}
 
-	username, _ := c.Get("username")
-	user := &models.User{Username: username.(string)}
+	username, ok := currentUsernameFromContext(c)
+	if !ok {
+		return
+	}
+	user := &models.User{Username: username}
 	if err := user.Find(); err != nil {
 		utils.FailWithMsg(c, "用户不存在")
 		return
@@ -190,8 +209,11 @@ func UserUpdateProfile(c *gin.Context) {
 	}
 
 	// 获取当前用户
-	username, _ := c.Get("username")
-	user := &models.User{Username: username.(string)}
+	username, ok := currentUsernameFromContext(c)
+	if !ok {
+		return
+	}
+	user := &models.User{Username: username}
 
 	// 查找用户获取ID
 	if err := user.Find(); err != nil {
@@ -205,7 +227,7 @@ func UserUpdateProfile(c *gin.Context) {
 	}
 
 	// 使用 map 更新字段，避免 GORM 忽略零值
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"username": req.Username,
 		"nickname": req.Nickname,
 	}
@@ -219,13 +241,36 @@ func UserUpdateProfile(c *gin.Context) {
 	utils.OkWithMsg(c, "个人资料更新成功")
 }
 
+func requireSessionAuthForAISettings(c *gin.Context) bool {
+	if strings.TrimSpace(c.GetHeader("X-API-Key")) == "" {
+		return true
+	}
+	utils.Forbidden(c, "AI 助手设置仅支持登录会话访问")
+	return false
+}
+
+func resolveAIRequestBaseURL(requestBaseURL, savedBaseURL string) (string, bool, error) {
+	trimmedRequestBaseURL := strings.TrimSpace(requestBaseURL)
+	if trimmedRequestBaseURL == "" {
+		return strings.TrimSpace(savedBaseURL), true, nil
+	}
+	normalizedRequestBaseURL, err := ai.NormalizeBaseURL(trimmedRequestBaseURL)
+	if err != nil {
+		return "", false, err
+	}
+	normalizedSavedBaseURL, err := ai.NormalizeBaseURL(savedBaseURL)
+	if err != nil {
+		normalizedSavedBaseURL = strings.TrimSpace(savedBaseURL)
+	}
+	return normalizedRequestBaseURL, normalizedRequestBaseURL == strings.TrimSpace(normalizedSavedBaseURL), nil
+}
+
 func UserGetAISettings(c *gin.Context) {
-	user, ok := requireCurrentUser(c)
-	if !ok {
+	if !requireSessionAuthForAISettings(c) {
 		return
 	}
 
-	settings, err := user.GetAISettings()
+	settings, err := models.GetSystemAISettings()
 	if err != nil {
 		utils.FailWithMsg(c, "获取 AI 设置失败: "+err.Error())
 		return
@@ -235,6 +280,10 @@ func UserGetAISettings(c *gin.Context) {
 }
 
 func UserListAIModels(c *gin.Context) {
+	if !requireSessionAuthForAISettings(c) {
+		return
+	}
+
 	type listAIModelsRequest struct {
 		BaseURL      string            `json:"baseUrl"`
 		APIKey       string            `json:"apiKey"`
@@ -247,26 +296,26 @@ func UserListAIModels(c *gin.Context) {
 		return
 	}
 
-	user, ok := requireCurrentUser(c)
-	if !ok {
-		return
-	}
-	current, err := user.GetAISettings()
+	current, err := models.GetSystemAISettings()
 	if err != nil {
 		utils.FailWithMsg(c, "读取当前 AI 设置失败: "+err.Error())
 		return
 	}
 
-	baseURL := strings.TrimSpace(req.BaseURL)
-	if baseURL == "" {
+	baseURL, usingSavedBaseURL, err := resolveAIRequestBaseURL(req.BaseURL, current.BaseURL)
+	if err != nil {
+		utils.FailWithMsg(c, err.Error())
+		return
+	}
+	if strings.TrimSpace(baseURL) == "" {
 		baseURL = current.BaseURL
 	}
 	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey == "" {
+	if apiKey == "" && usingSavedBaseURL {
 		apiKey = current.RawAPIKey
 	}
 	extraHeaders := req.ExtraHeaders
-	if len(extraHeaders) == 0 {
+	if len(extraHeaders) == 0 && usingSavedBaseURL {
 		extraHeaders = current.ExtraHeaders
 	}
 
@@ -284,6 +333,10 @@ func UserListAIModels(c *gin.Context) {
 }
 
 func UserUpdateAISettings(c *gin.Context) {
+	if !requireSessionAuthForAISettings(c) {
+		return
+	}
+
 	type updateAISettingsRequest struct {
 		Enabled      bool              `json:"enabled"`
 		BaseURL      string            `json:"baseUrl"`
@@ -292,8 +345,6 @@ func UserUpdateAISettings(c *gin.Context) {
 		Temperature  float64           `json:"temperature"`
 		MaxTokens    int               `json:"maxTokens"`
 		ExtraHeaders map[string]string `json:"extraHeaders"`
-		Password     string            `json:"password" binding:"required"`
-		Code         string            `json:"code"`
 	}
 
 	var req updateAISettingsRequest
@@ -302,12 +353,9 @@ func UserUpdateAISettings(c *gin.Context) {
 		return
 	}
 
-	user, ok := requireCurrentUser(c)
-	if !ok {
-		return
-	}
-	if err := requireMFAReauth(user, req.Password, req.Code); err != nil {
-		utils.FailWithMsg(c, err.Error())
+	current, err := models.GetSystemAISettings()
+	if err != nil {
+		utils.FailWithMsg(c, "读取当前 AI 设置失败: "+err.Error())
 		return
 	}
 
@@ -324,7 +372,7 @@ func UserUpdateAISettings(c *gin.Context) {
 		utils.FailWithMsg(c, "启用 AI 时模型不能为空")
 		return
 	}
-	if req.Enabled && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(user.AIAPIKeyEncrypted) == "" {
+	if req.Enabled && strings.TrimSpace(req.APIKey) == "" && !current.HasKey {
 		utils.FailWithMsg(c, "启用 AI 时请提供 API Key")
 		return
 	}
@@ -347,7 +395,7 @@ func UserUpdateAISettings(c *gin.Context) {
 		headersJSON = string(payload)
 	}
 
-	if err := user.UpdateAISettings(models.UserAISettings{
+	if err := models.UpdateSystemAISettings(models.UserAISettings{
 		Enabled:         req.Enabled,
 		BaseURL:         validatedBaseURL,
 		Model:           strings.TrimSpace(req.Model),
@@ -360,7 +408,7 @@ func UserUpdateAISettings(c *gin.Context) {
 		return
 	}
 
-	settings, err := user.GetAISettings()
+	settings, err := models.GetSystemAISettings()
 	if err != nil {
 		utils.FailWithMsg(c, "读取 AI 设置失败: "+err.Error())
 		return
@@ -369,12 +417,16 @@ func UserUpdateAISettings(c *gin.Context) {
 }
 
 func UserTestAISettings(c *gin.Context) {
+	if !requireSessionAuthForAISettings(c) {
+		return
+	}
+
 	type testAISettingsRequest struct {
 		BaseURL      string            `json:"baseUrl"`
 		Model        string            `json:"model"`
 		APIKey       string            `json:"apiKey"`
-		Temperature  float64           `json:"temperature"`
-		MaxTokens    int               `json:"maxTokens"`
+		Temperature  *float64          `json:"temperature"`
+		MaxTokens    *int              `json:"maxTokens"`
 		ExtraHeaders map[string]string `json:"extraHeaders"`
 	}
 
@@ -384,38 +436,44 @@ func UserTestAISettings(c *gin.Context) {
 		return
 	}
 
-	user, ok := requireCurrentUser(c)
-	if !ok {
-		return
-	}
-	current, err := user.GetAISettings()
+	current, err := models.GetSystemAISettings()
 	if err != nil {
 		utils.FailWithMsg(c, "读取当前 AI 设置失败: "+err.Error())
 		return
 	}
 
-	baseURL := strings.TrimSpace(req.BaseURL)
-	if baseURL == "" {
+	baseURL, usingSavedBaseURL, err := resolveAIRequestBaseURL(req.BaseURL, current.BaseURL)
+	if err != nil {
+		utils.FailWithMsg(c, err.Error())
+		return
+	}
+	if strings.TrimSpace(baseURL) == "" {
 		baseURL = current.BaseURL
 	}
 	model := strings.TrimSpace(req.Model)
-	if model == "" {
+	if model == "" && usingSavedBaseURL {
 		model = current.Model
 	}
 	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey == "" {
+	if apiKey == "" && usingSavedBaseURL {
 		apiKey = current.RawAPIKey
 	}
-	temperature := req.Temperature
-	if temperature == 0 {
+	temperature := 0.2
+	if usingSavedBaseURL {
 		temperature = current.Temperature
 	}
-	maxTokens := req.MaxTokens
-	if maxTokens == 0 {
+	if req.Temperature != nil {
+		temperature = *req.Temperature
+	}
+	maxTokens := 1200
+	if usingSavedBaseURL {
 		maxTokens = current.MaxTokens
 	}
+	if req.MaxTokens != nil {
+		maxTokens = *req.MaxTokens
+	}
 	extraHeaders := req.ExtraHeaders
-	if len(extraHeaders) == 0 {
+	if len(extraHeaders) == 0 && usingSavedBaseURL {
 		extraHeaders = current.ExtraHeaders
 	}
 

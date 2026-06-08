@@ -7,6 +7,8 @@ import (
 	"sublink/database"
 	"sublink/utils"
 	"time"
+
+	"gorm.io/gorm/clause"
 )
 
 // TaskStatus 任务状态
@@ -34,8 +36,9 @@ const (
 type TaskTrigger string
 
 const (
-	TaskTriggerManual    TaskTrigger = "manual"    // 手动触发
-	TaskTriggerScheduled TaskTrigger = "scheduled" // 定时触发
+	TaskTriggerManual        TaskTrigger = "manual"         // 手动触发
+	TaskTriggerScheduled     TaskTrigger = "scheduled"      // 定时触发
+	TaskTriggerAirportUpdate TaskTrigger = "airport_update" // 机场更新后触发
 )
 
 // Task 任务模型
@@ -157,7 +160,7 @@ func (t *Task) UpdateStatus(status TaskStatus, message string) error {
 }
 
 // SetResult 设置任务结果
-func (t *Task) SetResult(result interface{}) error {
+func (t *Task) SetResult(result any) error {
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return err
@@ -184,13 +187,13 @@ func ListTasks(filter TaskFilter, page, pageSize int) ([]Task, int64, error) {
 
 	// 应用过滤条件
 	if filter.Status != "" {
-		query = query.Where("status = ?", filter.Status)
+		query = query.Where(clause.Eq{Column: clause.Column{Name: "status"}, Value: filter.Status})
 	}
 	if filter.Type != "" {
-		query = query.Where("type = ?", filter.Type)
+		query = query.Where(clause.Eq{Column: clause.Column{Name: "type"}, Value: filter.Type})
 	}
 	if filter.Trigger != "" {
-		query = query.Where("trigger = ?", filter.Trigger)
+		query = query.Where(clause.Eq{Column: clause.Column{Name: "trigger"}, Value: filter.Trigger})
 	}
 
 	// 获取总数
@@ -281,7 +284,7 @@ func GetTaskStats() map[string]int64 {
 func MarkRunningTasksAsError() error {
 	return database.DB.Model(&Task{}).
 		Where("status = ?", TaskStatusRunning).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"status":  TaskStatusError,
 			"message": "服务重启，任务被中断",
 		}).Error

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import * as echarts from 'echarts';
 // import 'echarts-gl'; // 3D Not needed for flat map
 import { alpha, useTheme } from '@mui/material/styles';
@@ -42,6 +43,7 @@ const findCountryCode = (name) => {
 };
 
 const NodeMap = ({ data = {}, loading = false }) => {
+  const { t } = useTranslation();
   const chartRef = useRef(null);
   const theme = useTheme();
   const { isDark } = useResolvedColorScheme();
@@ -58,7 +60,6 @@ const NodeMap = ({ data = {}, loading = false }) => {
   const cardBackground = isDark
     ? 'radial-gradient(circle at center, rgba(17, 42, 78, 0.98) 0%, rgba(6, 18, 38, 0.99) 72%, rgba(3, 10, 24, 1) 100%)'
     : `radial-gradient(circle at center, ${alpha(theme.palette.background.paper, 1)} 0%, ${alpha(theme.palette.background.default, 0.94)} 100%)`;
-  const cardBorderColor = isDark ? alpha('#4dd0e1', 0.24) : 'divider';
   const overlaySurface = isDark
     ? 'linear-gradient(180deg, rgba(10, 30, 58, 0.78) 0%, rgba(5, 18, 38, 0.84) 100%)'
     : alpha(theme.palette.background.paper, 0.72);
@@ -188,7 +189,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
           if (params.name === 'CN' || (params.data && params.data.name === 'CN')) {
             return `<div style="display:flex;align-items:center;gap:12px">
                              <span style="font-size:24px;line-height:1">🇨🇳</span>
-                              <span style="font-size:16px;font-weight:bold;color:${readablePrimaryTextColor}">CN (本地区域)</span>
+                              <span style="font-size:16px;font-weight:bold;color:${readablePrimaryTextColor}">CN (${t('dashboard.nodeMap.localRegion')})</span>
                            </div>`;
           }
 
@@ -203,7 +204,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
                     <span style="font-size:16px;font-weight:bold;color:${readablePrimaryTextColor}">${valCode}</span>
                  </div>
                  <div style="margin-top:8px;font-size:12px;color:${readableSecondaryTextColor};display:flex;justify-content:space-between;width:120px">
-                     <span>节点数量</span>
+                     <span>${t('dashboard.nodeMap.nodeCount')}</span>
                      <span style="color:${params.color};font-weight:bold;font-family:monospace;font-size:14px">${count}</span>
                    </div>`;
         }
@@ -385,23 +386,26 @@ const NodeMap = ({ data = {}, loading = false }) => {
     isDark,
     targetLabelBackground,
     darkNodeColor,
-    darkTargetColor
+    darkTargetColor,
+    t
   ]);
 
   return (
     <Card
-      sx={{
+      sx={(theme) => ({
         height: '100%',
         width: '100%',
         background: cardBackground,
         color: 'text.primary',
         position: 'relative',
         overflow: 'hidden',
-        boxShadow: isDark ? `0 22px 44px ${alpha('#020915', 0.56)}, inset 0 0 0 1px ${alpha('#63f2ff', 0.08)}` : 'none',
+        boxShadow: isDark
+          ? `0 18px 42px ${alpha(theme.palette.common.black, 0.22)}, inset 0 1px 0 ${alpha(theme.palette.common.white, 0.035)}`
+          : `0 14px 34px ${alpha(theme.palette.primary.dark, 0.055)}, 0 3px 10px ${alpha(theme.palette.grey[500], 0.075)}`,
         border: '1px solid',
-        borderColor: cardBorderColor,
-        borderRadius: 0
-      }}
+        borderColor: isDark ? alpha(theme.palette.common.white, 0.08) : alpha(theme.palette.primary.main, 0.1),
+        borderRadius: 3
+      })}
     >
       <Box
         sx={{
@@ -441,7 +445,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
               fontFamily: '"Orbitron", sans-serif'
             }}
           >
-            全球节点分布
+            {t('dashboard.nodeMap.globalDistribution')}
           </Typography>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
             <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: successColor, boxShadow: `0 0 10px ${statusDotGlow}` }} />
@@ -449,7 +453,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
               variant="subtitle2"
               sx={{ color: isDark ? alpha('#98f7ff', 0.9) : accentColor, letterSpacing: '1.6px', fontFamily: '"Noto Sans SC", monospace' }}
             >
-              以获取到落地IP的数据为参考
+              {t('dashboard.nodeMap.dataReference')}
             </Typography>
           </Box>
         </Box>
@@ -465,7 +469,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
             py: 2,
             minWidth: 210,
             background: overlaySurface,
-            border: isDark ? '1px solid' : 'none',
+            border: '1px solid',
             borderColor: overlayBorderColor,
             boxShadow: overlayInsetHighlight,
             backdropFilter: `blur(${isDark ? 10 : 4}px)`
@@ -477,7 +481,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
                 variant="overline"
                 sx={{ color: readableTertiaryTextColor, letterSpacing: 2, display: 'block', fontFamily: '"Noto Sans SC"' }}
               >
-                覆盖区域
+                {t('dashboard.nodeMap.coveredRegions')}
               </Typography>
               <Typography
                 variant="h2"
@@ -501,7 +505,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: 1.25,
-                background: alpha(theme.palette.background.default, isDark ? 0.34 : 0.8),
+                background: isDark ? 'transparent' : alpha(theme.palette.background.default, 0.8),
                 border: '1px solid',
                 borderColor: overlayBorderColor,
                 borderTop: `2px solid ${unknownCount > 0 ? alpha(isDark ? '#63f2ff' : accentColor, isDark ? 0.72 : 0.6) : alpha(accentColor, 0.3)}`,
@@ -514,13 +518,13 @@ const NodeMap = ({ data = {}, loading = false }) => {
                   variant="caption"
                   sx={{ color: readableSecondaryTextColor, letterSpacing: 1.2, fontFamily: '"Noto Sans SC", monospace' }}
                 >
-                  未知区域
+                  {t('dashboard.nodeMap.unknownRegions')}
                 </Typography>
                 <Typography
                   variant="body2"
                   sx={{ color: readableTertiaryTextColor, lineHeight: 1.2, fontFamily: '"Noto Sans SC", monospace' }}
                 >
-                  未匹配到国家坐标
+                  {t('dashboard.nodeMap.unmatchedCoordinates')}
                 </Typography>
               </Box>
 
@@ -567,7 +571,7 @@ const NodeMap = ({ data = {}, loading = false }) => {
         >
           <CircularProgress size={60} sx={{ color: accentColor }} />
           <Typography sx={{ color: readableSecondaryTextColor, letterSpacing: 4, fontFamily: '"Noto Sans SC", monospace' }}>
-            正在初始化地图...
+            {t('dashboard.nodeMap.initializing')}
           </Typography>
         </Box>
       )}

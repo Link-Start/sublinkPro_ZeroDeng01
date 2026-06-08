@@ -1,6 +1,9 @@
 package models
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,33 +15,85 @@ import (
 	"gorm.io/gorm"
 )
 
+type AirportRequestHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type AirportRequestHeaders []AirportRequestHeader
+
+func (h AirportRequestHeaders) Value() (driver.Value, error) {
+	if len(h) == 0 {
+		return "[]", nil
+	}
+	data, err := json.Marshal(h)
+	if err != nil {
+		return nil, err
+	}
+	return string(data), nil
+}
+
+func (h *AirportRequestHeaders) Scan(value any) error {
+	if value == nil {
+		*h = AirportRequestHeaders{}
+		return nil
+	}
+
+	var raw []byte
+	switch v := value.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("unsupported request headers type: %T", value)
+	}
+
+	if len(raw) == 0 {
+		*h = AirportRequestHeaders{}
+		return nil
+	}
+
+	var parsed AirportRequestHeaders
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return err
+	}
+	*h = parsed
+	return nil
+
+}
+
 // Airport 机场模型
 // 用于管理外部订阅源，支持定时拉取更新
 type Airport struct {
-	ID                int        `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name              string     `json:"name"`                                   // 机场名称（唯一）
-	URL               string     `json:"url"`                                    // 订阅地址
-	CronExpr          string     `json:"cronExpr"`                               // 定时更新Cron表达式
-	Enabled           bool       `json:"enabled"`                                // 是否启用
-	SuccessCount      int        `gorm:"default:0" json:"successCount"`          // 成功拉取次数
-	LastRunTime       *time.Time `json:"lastRunTime"`                            // 上次运行时间
-	NextRunTime       *time.Time `json:"nextRunTime"`                            // 下次运行时间
-	CreatedAt         time.Time  `gorm:"autoCreateTime" json:"createdAt"`        // 创建时间
-	UpdatedAt         time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`        // 更新时间
-	Group             string     `json:"group"`                                  // 导入节点的默认分组
-	DownloadWithProxy bool       `gorm:"default:false" json:"downloadWithProxy"` // 是否使用代理下载
-	ProxyLink         string     `gorm:"type:text" json:"proxyLink"`             // 代理节点链接
-	UserAgent         string     `json:"userAgent"`                              // 自定义User-Agent
-	NodeCount         int        `gorm:"-" json:"nodeCount"`                     // 节点数量（非数据库字段）
+	ID                int                   `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name              string                `json:"name"`                                   // 机场名称（唯一）
+	URL               string                `json:"url"`                                    // 订阅地址
+	CronExpr          string                `json:"cronExpr"`                               // 定时更新Cron表达式
+	Enabled           bool                  `json:"enabled"`                                // 是否启用
+	SuccessCount      int                   `gorm:"default:0" json:"successCount"`          // 成功拉取次数
+	LastRunTime       *time.Time            `json:"lastRunTime"`                            // 上次运行时间
+	NextRunTime       *time.Time            `json:"nextRunTime"`                            // 下次运行时间
+	CreatedAt         time.Time             `gorm:"autoCreateTime" json:"createdAt"`        // 创建时间
+	UpdatedAt         time.Time             `gorm:"autoUpdateTime" json:"updatedAt"`        // 更新时间
+	Group             string                `json:"group"`                                  // 导入节点的默认分组
+	DownloadWithProxy bool                  `gorm:"default:false" json:"downloadWithProxy"` // 是否使用代理下载
+	ProxyLink         string                `gorm:"type:text" json:"proxyLink"`             // 代理节点链接
+	UserAgent         string                `json:"userAgent"`                              // 自定义User-Agent
+	RequestHeaders    AirportRequestHeaders `gorm:"type:text" json:"requestHeaders"`        // 自定义请求头
+	NodeCount         int                   `gorm:"-" json:"nodeCount"`                     // 节点数量（非数据库字段）
 	// 用量信息相关字段
-	FetchUsageInfo bool   `gorm:"default:false" json:"fetchUsageInfo"` // 是否获取用量信息
-	UsageUpload    int64  `gorm:"default:0" json:"usageUpload"`        // 已上传流量（字节）
-	UsageDownload  int64  `gorm:"default:0" json:"usageDownload"`      // 已下载流量（字节）
-	UsageTotal     int64  `gorm:"default:0" json:"usageTotal"`         // 总流量配额（字节）
-	UsageExpire    int64  `gorm:"default:0" json:"usageExpire"`        // 订阅过期时间（Unix时间戳）
-	SkipTLSVerify  bool   `gorm:"default:false" json:"skipTLSVerify"`  // 是否跳过TLS证书验证
-	Remark         string `json:"remark"`                              // 备注信息
-	Logo           string `json:"logo"`                                // Logo：URL、icon:图标名、或emoji字符
+	FetchUsageInfo               bool   `gorm:"default:false" json:"fetchUsageInfo"`               // 是否获取用量信息
+	UsageUpload                  int64  `gorm:"default:0" json:"usageUpload"`                      // 已上传流量（字节）
+	UsageDownload                int64  `gorm:"default:0" json:"usageDownload"`                    // 已下载流量（字节）
+	UsageTotal                   int64  `gorm:"default:0" json:"usageTotal"`                       // 总流量配额（字节）
+	UsageExpire                  int64  `gorm:"default:0" json:"usageExpire"`                      // 订阅过期时间（Unix时间戳）
+	SkipTLSVerify                bool   `gorm:"default:false" json:"skipTLSVerify"`                // 是否跳过TLS证书验证
+	UpdateAfterDetect            bool   `gorm:"default:false" json:"updateAfterDetect"`            // 更新后是否自动执行节点检测
+	UpdateAfterDetectProfileID   int    `gorm:"default:0" json:"updateAfterDetectProfileId"`       // 更新后检测使用的节点检测策略ID
+	UpdateAfterDetectChangedOnly bool   `gorm:"default:false" json:"updateAfterDetectChangedOnly"` // 更新后检测仅检测变化/新增节点
+	Remark                       string `json:"remark"`                                            // 备注信息
+	Logo                         string `json:"logo"`                                              // Logo：URL、icon:图标名、或emoji字符
 	// 节点过滤规则（拉取时生效）
 	NodeNameWhitelist string `json:"nodeNameWhitelist"` // 节点名称白名单 (JSON数组)
 	NodeNameBlacklist string `json:"nodeNameBlacklist"` // 节点名称黑名单 (JSON数组)
@@ -49,8 +104,9 @@ type Airport struct {
 	// 节点去重规则（拉取时生效）
 	DeduplicationRule string `json:"deduplicationRule"` // 去重规则配置(JSON)
 	// 节点名称唯一化（拉取时生效）
-	NodeNameUniquify bool   `gorm:"default:false" json:"nodeNameUniquify"` // 是否开启节点名称唯一化
-	NodeNamePrefix   string `json:"nodeNamePrefix"`                        // 自定义名称前缀（可选）
+	NodeNameUniquify      bool   `gorm:"default:false" json:"nodeNameUniquify"`      // 是否开启节点名称唯一化
+	NodeNamePrefix        string `json:"nodeNamePrefix"`                             // 自定义名称前缀（可选）
+	NodeNameIntraUniquify bool   `gorm:"default:false" json:"nodeNameIntraUniquify"` // 是否开启机场内节点名称唯一化
 }
 
 // TableName 指定表名
@@ -97,9 +153,10 @@ func (a *Airport) Update() error {
 	err := database.DB.Model(a).Select(
 		"Name", "URL", "CronExpr", "Enabled", "LastRunTime", "NextRunTime",
 		"SuccessCount", "Group", "DownloadWithProxy", "ProxyLink", "UserAgent",
-		"FetchUsageInfo", "SkipTLSVerify", "Remark", "Logo",
+		"RequestHeaders",
+		"FetchUsageInfo", "SkipTLSVerify", "UpdateAfterDetect", "UpdateAfterDetectProfileID", "UpdateAfterDetectChangedOnly", "Remark", "Logo",
 		"NodeNameWhitelist", "NodeNameBlacklist", "ProtocolWhitelist", "ProtocolBlacklist", "NodeNamePreprocess",
-		"DeduplicationRule", "NodeNameUniquify", "NodeNamePrefix",
+		"DeduplicationRule", "NodeNameUniquify", "NodeNamePrefix", "NodeNameIntraUniquify",
 	).Updates(a).Error
 	if err != nil {
 		return err
@@ -123,6 +180,18 @@ func (a *Airport) Find() error {
 		return nil
 	}
 	return database.DB.Where("url = ? or name = ?", a.URL, a.Name).First(a).Error
+}
+
+// HasAirportIdentityConflict 检查指定名称或 URL 是否已被其他机场使用。
+func HasAirportIdentityConflict(excludeID int, name, url string) (bool, error) {
+	checkAirport := Airport{Name: name, URL: url}
+	if err := checkAirport.Find(); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return checkAirport.ID != excludeID, nil
 }
 
 // List 获取所有机场
@@ -227,7 +296,7 @@ func (a *Airport) Del() error {
 
 // UpdateRunTime 更新运行时间 (Write-Through)
 func (a *Airport) UpdateRunTime(lastRun, nextRun *time.Time) error {
-	err := database.DB.Model(a).Select("LastRunTime", "NextRunTime").Updates(map[string]interface{}{
+	err := database.DB.Model(a).Select("LastRunTime", "NextRunTime").Updates(map[string]any{
 		"LastRunTime": lastRun,
 		"NextRunTime": nextRun,
 	}).Error
@@ -333,7 +402,7 @@ func BatchUpdateAirports(ids []int, params AirportBatchUpdateParams) ([]Airport,
 		}
 
 		for _, airport := range airports {
-			updates := make(map[string]interface{})
+			updates := make(map[string]any)
 			if params.ApplyGroup {
 				updates["group"] = params.Group
 			}
@@ -383,7 +452,7 @@ func BatchUpdateAirports(ids []int, params AirportBatchUpdateParams) ([]Airport,
 
 // UpdateUsageInfo 更新用量信息 (Write-Through)
 func (a *Airport) UpdateUsageInfo(upload, download, total, expire int64) error {
-	err := database.DB.Model(a).Select("UsageUpload", "UsageDownload", "UsageTotal", "UsageExpire").Updates(map[string]interface{}{
+	err := database.DB.Model(a).Select("UsageUpload", "UsageDownload", "UsageTotal", "UsageExpire").Updates(map[string]any{
 		"UsageUpload":   upload,
 		"UsageDownload": download,
 		"UsageTotal":    total,

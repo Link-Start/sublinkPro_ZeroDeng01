@@ -48,6 +48,8 @@ type parsedRulesetSource struct {
 	Interval   int
 }
 
+var ruleProviderNumericPrefix = regexp.MustCompile(`^\d+`)
+
 // ACLProxyGroup ACL 代理组定义
 type ACLProxyGroup struct {
 	Name       string   // 组名
@@ -244,22 +246,22 @@ func parseProxyGroup(line string) ACLProxyGroup {
 		}
 
 		// 检测数字格式 interval,,tolerance 或 interval
-		if matched, _ := regexp.MatchString(`^\d+`, part); matched {
+		if ruleProviderNumericPrefix.MatchString(part) {
 			// 检查是否有 ,, 分隔符 (interval,,tolerance)
 			if strings.Contains(part, ",") {
 				numParts := strings.Split(part, ",")
 				if len(numParts) >= 1 && numParts[0] != "" {
-					fmt.Sscanf(numParts[0], "%d", &pg.Interval)
+					_, _ = fmt.Sscanf(numParts[0], "%d", &pg.Interval)
 				}
 				// tolerance 在最后一个非空元素
 				for j := len(numParts) - 1; j >= 0; j-- {
 					if numParts[j] != "" && j > 0 {
-						fmt.Sscanf(numParts[j], "%d", &pg.Tolerance)
+						_, _ = fmt.Sscanf(numParts[j], "%d", &pg.Tolerance)
 						break
 					}
 				}
 			} else {
-				fmt.Sscanf(part, "%d", &pg.Interval)
+				_, _ = fmt.Sscanf(part, "%d", &pg.Interval)
 			}
 			continue
 		}
@@ -437,9 +439,7 @@ func generateClashRules(rulesets []ACLRuleset, expand bool, useProxy bool, proxy
 	if len(providers) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, "rule-providers:")
-		for _, p := range providers {
-			lines = append(lines, p)
-		}
+		lines = append(lines, providers...)
 	}
 
 	return strings.Join(lines, "\n"), nil
@@ -664,7 +664,7 @@ func parseRuleEntries(content string) []string {
 
 func parseYAMLPayloadEntries(content string) ([]string, bool) {
 	var payload struct {
-		Payload []interface{} `yaml:"payload"`
+		Payload []any `yaml:"payload"`
 	}
 
 	if err := yaml.Unmarshal([]byte(content), &payload); err != nil || payload.Payload == nil {
@@ -955,19 +955,6 @@ func generateSurgeProxyGroups(groups []ACLProxyGroup, enableIncludeAll bool) str
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-// extractSurgeRegexFilter 从正则模式列表中提取 Surge 格式的 filter
-// 输入: ["(香港|HK)", "(日本|JP)"]
-// 输出: "香港|HK|日本|JP"
-func extractSurgeRegexFilter(filters []string) string {
-	var allOptions []string
-	for _, f := range filters {
-		// 去除首尾括号，提取内部选项
-		inner := strings.TrimPrefix(strings.TrimSuffix(f, ")"), "(")
-		allOptions = append(allOptions, inner)
-	}
-	return strings.Join(allOptions, "|")
 }
 
 // generateSurgeRules 生成 Surge 格式的规则

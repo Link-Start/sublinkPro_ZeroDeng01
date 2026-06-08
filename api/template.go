@@ -660,7 +660,7 @@ func GenerateTemplateAICandidateStream(c *gin.Context) {
 		utils.FailWithMsg(c, "当前环境不支持流式响应")
 		return
 	}
-	writeEvent := func(event string, payload interface{}) error {
+	writeEvent := func(event string, payload any) error {
 		writer := bufio.NewWriter(c.Writer)
 		data, err := json.Marshal(payload)
 		if err != nil {
@@ -782,9 +782,9 @@ type ACL4SSRPreset struct {
 func GetACL4SSRPresets(c *gin.Context) {
 	presets := []ACL4SSRPreset{
 		{
-			Name:  "作者自用",
+			Name:  "无国家分组",
 			URL:   "https://raw.githubusercontent.com/ZeroDeng01/ACL4SSR/master/Clash/config/ACL4SSR_Online_Full_NoCountry.ini",
-			Label: "作者自用 - 不区分国家",
+			Label: "不区分国家",
 		},
 		{
 			Name:  "ACL4SSR",

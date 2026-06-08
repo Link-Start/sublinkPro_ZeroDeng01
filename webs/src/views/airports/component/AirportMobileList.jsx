@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import PropTypes from 'prop-types';
+import { useTranslation } from 'react-i18next';
 
 // material-ui
 import { useTheme, alpha } from '@mui/material/styles';
@@ -54,9 +55,11 @@ export default function AirportMobileList({
   onPull,
   onOpenNodes,
   onQuickCheck,
-  onRefreshUsage
+  onRefreshUsage,
+  nodeCheckProfiles
 }) {
   const theme = useTheme();
+  const { t } = useTranslation();
   const { isDark } = useResolvedColorScheme();
   const { palette, mutedPanelSurface, nestedPanelSurface, panelBorder } = getSurfaceTokens(theme, isDark);
   const { primaryText, secondaryText } = getReadableTextTokens(theme, isDark);
@@ -69,6 +72,13 @@ export default function AirportMobileList({
   const [copyTip, setCopyTip] = useState({ open: false, name: '' });
   const [menuAnchor, setMenuAnchor] = useState(null);
   const [menuAirportId, setMenuAirportId] = useState(null);
+
+  // 根据检测策略ID查找策略名称
+  const getDetectProfileName = (profileId) => {
+    if (!profileId || profileId === 0) return null;
+    const profile = nodeCheckProfiles.find((p) => p.id === profileId);
+    return profile ? profile.name : null;
+  };
 
   // 复制订阅地址
   const handleCopyUrl = async (airport) => {
@@ -101,7 +111,7 @@ export default function AirportMobileList({
     return (
       <Box sx={{ py: 6, textAlign: 'center' }}>
         <Typography variant="body2" color="text.secondary">
-          暂无机场数据，点击上方"添加"按钮添加
+          {t('airports.mobile.empty.add')}
         </Typography>
       </Box>
     );
@@ -209,7 +219,12 @@ export default function AirportMobileList({
                       {airport.name}
                     </Typography>
                     <Stack direction="row" spacing={0.75} sx={{ mt: 1, flexWrap: 'wrap', gap: 0.75 }}>
-                      <Chip label={airport.enabled ? '启用' : '禁用'} variant="filled" size="small" sx={getStatusChipSx(airport.enabled)} />
+                      <Chip
+                        label={airport.enabled ? t('common.enabled') : t('common.disabled')}
+                        variant="filled"
+                        size="small"
+                        sx={getStatusChipSx(airport.enabled)}
+                      />
                       {airport.group && (
                         <Chip
                           label={airport.group}
@@ -246,7 +261,12 @@ export default function AirportMobileList({
                 </Stack>
 
                 <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
-                  <Chip label={`${airport.nodeCount || 0} 节点`} color="primary" variant="outlined" size="small" />
+                  <Chip
+                    label={t('airports.list.nodeCount', { count: airport.nodeCount || 0 })}
+                    color="primary"
+                    variant="outlined"
+                    size="small"
+                  />
                   <Chip
                     icon={<AccessTimeIcon sx={{ fontSize: '14px !important' }} />}
                     label={airport.cronExpr}
@@ -276,7 +296,7 @@ export default function AirportMobileList({
                 >
                   <Box sx={{ minWidth: 0 }}>
                     <Typography variant="caption" sx={{ color: secondaryText }}>
-                      上次运行
+                      {t('airports.list.lastRun')}
                     </Typography>
                     <Typography variant="body2" sx={{ mt: 0.5, color: primaryText, wordBreak: 'break-word' }}>
                       {formatDateTime(airport.lastRunTime)}
@@ -284,7 +304,7 @@ export default function AirportMobileList({
                   </Box>
                   <Box sx={{ minWidth: 0 }}>
                     <Typography variant="caption" sx={{ color: secondaryText }}>
-                      下次运行
+                      {t('airports.list.nextRun')}
                     </Typography>
                     <Typography variant="body2" sx={{ mt: 0.5, color: primaryText, wordBreak: 'break-word' }}>
                       {formatDateTime(airport.nextRunTime)}
@@ -295,11 +315,11 @@ export default function AirportMobileList({
                 {airport.fetchUsageInfo && (
                   <Box sx={{ mb: 2 }}>
                     <Typography variant="caption" sx={{ display: 'block', mb: 1, fontWeight: 500, color: secondaryText }}>
-                      用量信息
+                      {t('airports.list.usage.title')}
                     </Typography>
                     {airport.usageTotal === -1 ? (
                       <Typography variant="body2" sx={{ color: 'error.main', fontWeight: 500 }}>
-                        用量获取失败（机场可能不支持）
+                        {t('airports.list.usage.failedMaybeUnsupported')}
                       </Typography>
                     ) : airport.usageTotal > 0 ? (
                       <Box
@@ -386,8 +406,8 @@ export default function AirportMobileList({
                                           fontWeight: isUrgent || isWarning ? 600 : 400
                                         }}
                                       >
-                                        到期: {formatExpireTime(airport.usageExpire)}
-                                        {isUrgent && ` (${Math.max(0, Math.ceil(daysLeft))}天)`}
+                                        {t('airports.list.usage.expireAt', { time: formatExpireTime(airport.usageExpire) })}
+                                        {isUrgent && ` (${t('airports.list.usage.daysLeft', { count: Math.max(0, Math.ceil(daysLeft)) })})`}
                                       </Typography>
                                     </Box>
                                   );
@@ -398,7 +418,7 @@ export default function AirportMobileList({
                       </Box>
                     ) : (
                       <Typography variant="body2" sx={{ color: secondaryText }}>
-                        待获取
+                        {t('airports.list.usage.pending')}
                       </Typography>
                     )}
                   </Box>
@@ -406,10 +426,66 @@ export default function AirportMobileList({
 
                 <Box sx={{ mb: 2 }}>
                   <Typography variant="caption" sx={{ display: 'block', mb: 1, fontWeight: 500, color: secondaryText }}>
-                    节点测试
+                    {t('airports.list.speed.title')}
                   </Typography>
                   <AirportNodeStatsCard nodeStats={airport.nodeStats} nodeCount={airport.nodeCount || 0} />
                 </Box>
+
+                {/* 更新后检测 */}
+                {airport.updateAfterDetect && (
+                  <Box
+                    sx={{
+                      mb: 2,
+                      p: 1.5,
+                      borderRadius: 2,
+                      bgcolor: nestedPanelSurface,
+                      border: `1px solid ${panelBorder}`
+                    }}
+                  >
+                    <Typography variant="caption" sx={{ display: 'block', mb: 1, fontWeight: 500, color: secondaryText }}>
+                      {t('airports.list.updateAfterDetect.title')}
+                    </Typography>
+                    <Stack direction="row" spacing={1} alignItems="center" useFlexGap>
+                      {(() => {
+                        const profileName = getDetectProfileName(airport.updateAfterDetectProfileId);
+                        return profileName ? (
+                          <Chip
+                            label={profileName}
+                            size="small"
+                            sx={{
+                              height: 22,
+                              fontSize: '0.75rem',
+                              fontWeight: 500,
+                              color: isDark ? palette.success.light : palette.success.dark,
+                              bgcolor: withAlpha(palette.success.main, isDark ? 0.18 : 0.12),
+                              border: `1px solid ${withAlpha(palette.success.main, isDark ? 0.34 : 0.18)}`,
+                              '& .MuiChip-label': { px: 1 }
+                            }}
+                          />
+                        ) : (
+                          <Chip
+                            label={t('airports.list.updateAfterDetect.deletedProfile')}
+                            size="small"
+                            sx={{
+                              height: 22,
+                              fontSize: '0.75rem',
+                              fontWeight: 500,
+                              color: isDark ? palette.warning.light : palette.warning.dark,
+                              bgcolor: withAlpha(palette.warning.main, isDark ? 0.18 : 0.12),
+                              border: `1px solid ${withAlpha(palette.warning.main, isDark ? 0.34 : 0.18)}`,
+                              '& .MuiChip-label': { px: 1 }
+                            }}
+                          />
+                        );
+                      })()}
+                      {airport.updateAfterDetectChangedOnly && (
+                        <Typography variant="caption" sx={{ color: secondaryText, fontSize: '0.7rem' }}>
+                          {t('airports.list.updateAfterDetect.changedOnly')}
+                        </Typography>
+                      )}
+                    </Stack>
+                  </Box>
+                )}
 
                 <Stack
                   direction="row"
@@ -440,10 +516,10 @@ export default function AirportMobileList({
                       whiteSpace: 'nowrap'
                     }}
                   >
-                    立即拉取
+                    {t('airports.list.actions.pullNow')}
                   </Button>
                   <IconButton
-                    aria-label="刷新用量"
+                    aria-label={t('airports.list.actions.refreshUsage')}
                     onClick={() => onRefreshUsage(airport)}
                     disabled={!airport.fetchUsageInfo}
                     sx={{
@@ -461,7 +537,7 @@ export default function AirportMobileList({
                     <AccountBalanceWalletIcon />
                   </IconButton>
                   <IconButton
-                    aria-label="复制订阅地址"
+                    aria-label={t('airports.list.actions.copySubscriptionUrl')}
                     onClick={() => handleCopyUrl(airport)}
                     sx={{
                       flexShrink: 0,
@@ -476,7 +552,7 @@ export default function AirportMobileList({
                     <ContentCopyIcon />
                   </IconButton>
                   <IconButton
-                    aria-label="更多操作"
+                    aria-label={t('airports.list.actions.more')}
                     onClick={(event) => handleOpenMenu(event, airport.id)}
                     sx={{
                       width: 40,
@@ -524,7 +600,7 @@ export default function AirportMobileList({
           <ListItemIcon>
             <LanIcon fontSize="small" color="primary" />
           </ListItemIcon>
-          <ListItemText>查看节点</ListItemText>
+          <ListItemText>{t('airports.list.actions.viewNodes')}</ListItemText>
         </MenuItem>
         <MenuItem
           onClick={() => {
@@ -535,7 +611,7 @@ export default function AirportMobileList({
           <ListItemIcon>
             <SpeedIcon fontSize="small" color="primary" />
           </ListItemIcon>
-          <ListItemText>快速检测</ListItemText>
+          <ListItemText>{t('airports.list.actions.quickCheck')}</ListItemText>
         </MenuItem>
         <MenuItem
           onClick={() => {
@@ -546,7 +622,7 @@ export default function AirportMobileList({
           <ListItemIcon>
             <EditIcon fontSize="small" color="info" />
           </ListItemIcon>
-          <ListItemText>编辑</ListItemText>
+          <ListItemText>{t('common.edit')}</ListItemText>
         </MenuItem>
         <MenuItem
           onClick={() => {
@@ -558,7 +634,7 @@ export default function AirportMobileList({
           <ListItemIcon>
             <DeleteIcon fontSize="small" color="error" />
           </ListItemIcon>
-          <ListItemText>删除</ListItemText>
+          <ListItemText>{t('common.delete')}</ListItemText>
         </MenuItem>
       </Menu>
 
@@ -570,7 +646,7 @@ export default function AirportMobileList({
         anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
       >
         <Alert severity="success" variant="standard" sx={{ width: '100%' }}>
-          已复制「{copyTip.name}」的订阅地址
+          {t('airports.list.messages.copiedSubscriptionUrl', { name: copyTip.name })}
         </Alert>
       </Snackbar>
     </>
@@ -586,9 +662,11 @@ AirportMobileList.propTypes = {
   onPull: PropTypes.func.isRequired,
   onOpenNodes: PropTypes.func.isRequired,
   onQuickCheck: PropTypes.func.isRequired,
-  onRefreshUsage: PropTypes.func
+  onRefreshUsage: PropTypes.func,
+  nodeCheckProfiles: PropTypes.array
 };
 
 AirportMobileList.defaultProps = {
-  selectedIds: []
+  selectedIds: [],
+  nodeCheckProfiles: []
 };

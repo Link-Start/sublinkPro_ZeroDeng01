@@ -49,7 +49,7 @@ type PreviewRequest struct {
 	DeduplicationRule  string   `json:"DeduplicationRule"`  // 去重规则配置
 
 	// 兼容旧版本：节点名称列表（已废弃，保留向后兼容）
-	Nodes []interface{} `json:"Nodes"` // 可以是节点ID或节点名称
+	Nodes []any `json:"Nodes"` // 可以是节点ID或节点名称
 }
 
 // PreviewSubscriptionNodes 预览订阅节点
@@ -119,7 +119,7 @@ func previewSavedSubscription(subID int) (*models.PreviewResult, error) {
 		processedLinkName := utils.PreprocessNodeName(sub.NodeNamePreprocess, node.LinkName)
 
 		// 计算预览名称
-		previewName := node.LinkName
+		previewName := node.EffectiveName()
 		previewLink := node.Link
 
 		if sub.NodeNameRule != "" {
@@ -332,17 +332,18 @@ func buildNodesWithMixedSort(req PreviewRequest) []models.Node {
 			// 添加分组中的所有节点
 			if nodes, exists := groupNodeMap[item.Group]; exists {
 				for _, node := range nodes {
-					if !nodeMap[node.Name] {
+					nameKey := node.EffectiveName()
+					if !nodeMap[nameKey] {
 						result = append(result, node)
-						nodeMap[node.Name] = true
+						nodeMap[nameKey] = true
 					}
 				}
 			}
 		} else {
 			// 添加单个节点
-			if item.Node != nil && !nodeMap[item.Node.Name] {
+			if item.Node != nil && !nodeMap[item.Node.EffectiveName()] {
 				result = append(result, *item.Node)
-				nodeMap[item.Node.Name] = true
+				nodeMap[item.Node.EffectiveName()] = true
 			}
 		}
 	}

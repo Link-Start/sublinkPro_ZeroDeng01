@@ -16,7 +16,7 @@ RUN cd webs && yarn install && yarn run build
 
 
 # 2. 构建后端
-FROM golang:1.26.1 AS backend-builder
+FROM golang:1.26.3 AS backend-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -30,6 +30,7 @@ RUN CGO_ENABLED=0 go build -tags=prod -ldflags="-s -w" -o sublinkPro
 
 # 3. 运行镜像
 FROM alpine:latest
+ARG TARGETARCH
 WORKDIR /app
 
 # ============================================
@@ -55,11 +56,19 @@ ENV GIN_MODE=release
 # 管理员配置
 # SUBLINK_ADMIN_PASSWORD      - 初始管理员密码 (仅首次启动时生效)
 # SUBLINK_ADMIN_PASSWORD_REST - 重置管理员密码
-
-# 安装 tzdata 和 ca-certificates，并设置时区
-RUN apk add --no-cache tzdata ca-certificates && \
+# 安装运行时依赖、cloudflared，并设置时区
+RUN apk add --no-cache tzdata ca-certificates curl && \
     cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-    echo "Asia/Shanghai" > /etc/timezone
+    echo "Asia/Shanghai" > /etc/timezone && \
+    arch="${TARGETARCH:-$(uname -m)}" && \
+    case "$arch" in \
+      amd64|x86_64) cloudflared_arch="amd64" ;; \
+      arm64|aarch64) cloudflared_arch="arm64" ;; \
+      *) echo "unsupported cloudflared architecture: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cloudflared_arch}" -o /usr/local/bin/cloudflared && \
+    chmod +x /usr/local/bin/cloudflared && \
+    cloudflared version
 RUN mkdir -p /app/db /app/logs /app/template && chmod 777 /app/db /app/logs /app/template
 
 COPY --from=backend-builder /app/sublinkPro /app/sublinkPro
