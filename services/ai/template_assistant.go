@@ -99,6 +99,7 @@ func GenerateCandidateStream(ctx context.Context, user *models.User, req Generat
 		BaseURL:      settings.BaseURL,
 		APIKey:       settings.RawAPIKey,
 		Model:        settings.Model,
+		RequestType:  settings.RequestType,
 		Temperature:  settings.Temperature,
 		MaxTokens:    settings.MaxTokens,
 		ExtraHeaders: settings.ExtraHeaders,
@@ -106,12 +107,20 @@ func GenerateCandidateStream(ctx context.Context, user *models.User, req Generat
 	if err != nil {
 		return nil, err
 	}
-	content, finishReason, usage, err := client.StreamResponses(ctx, BuildPrompt(req), func(event ResponsesEvent) error {
-		if onEvent == nil {
-			return nil
-		}
-		return onEvent(event)
-	})
+	messages := BuildPrompt(req)
+	var content string
+	var finishReason string
+	var usage map[string]any
+	if settings.RequestType == models.SystemAIRequestTypeChatCompletions {
+		content, finishReason, usage, err = client.StreamChatCompletions(ctx, messages, onEvent)
+	} else {
+		content, finishReason, usage, err = client.StreamResponses(ctx, messages, func(event ResponsesEvent) error {
+			if onEvent == nil {
+				return nil
+			}
+			return onEvent(event)
+		})
+	}
 	if err != nil {
 		return nil, err
 	}

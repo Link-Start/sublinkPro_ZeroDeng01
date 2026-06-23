@@ -48,10 +48,12 @@ AI 模板编辑特别适合下面这些任务：
 - **模型名称**
 - **API Key**
 
-可选的 **Max Tokens** 默认值为 `400000`；如果在设置页填写 `0`，系统会使用该服务端默认值。
+请根据服务商能力选择 **接口类型**：
 
-> [!IMPORTANT]
-> 当前 AI 助手**仅支持提供 `/responses` endpoint 的服务**。如果某个服务只支持 `/chat/completions` 或其他兼容层，而不支持 `/responses`，则无法用于本项目的 AI 模板编辑与连接测试。
+- **Responses API** 调用 `/responses`。
+- **Chat Completions API** 调用 `/chat/completions`。
+
+可选的 **Max Tokens** 默认值为 `400000`；如果在设置页填写 `0`，系统会使用该服务端默认值。
 
 > [!TIP]
 > 模板编辑器中的 AI 功能使用的是 `设置 -> AI 助手` 中保存的系统级配置。建议先完成配置并测试连接，再回到模板编辑器生成草稿。
@@ -67,7 +69,7 @@ AI 模板编辑特别适合下面这些任务：
 
 检查是否已启用 AI，并确认 Base URL、模型名称和 API Key 已正确填写。
 
-同时请确认该 Base URL 对应的 AI 服务实际支持 `/responses` endpoint；仅有传统 `chat/completions` 能力的接口当前不可用。
+同时请确认该 Base URL 对应的 AI 服务实际支持当前选择的接口类型。
 
 ---
 

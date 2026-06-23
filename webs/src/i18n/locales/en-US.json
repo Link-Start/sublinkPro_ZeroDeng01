@@ -628,10 +628,14 @@
       "title": "AI Assistant Settings",
       "subheader": "Configure the system AI assistant used by the template editor.",
       "alerts": {
-        "systemConfig": "The template editor's AI assistant uses this system-level configuration. Currently only AI services that provide a /responses endpoint are supported."
+        "systemConfig": "The template editor's AI assistant uses this system-level configuration. You can choose Responses API or the standard Chat Completions API."
       },
       "enableTitle": "Enable system AI assistant",
-      "providerType": "Current interface type: Responses API (only `/responses` endpoint is supported).",
+      "providerType": "Current interface type: {{type}}.",
+      "requestTypes": {
+        "responses": "Responses API (/responses)",
+        "chatCompletions": "Chat Completions API (/chat/completions)"
+      },
       "status": {
         "configured": "Connection parameters saved",
         "notConfigured": "Configuration incomplete",
@@ -640,7 +644,9 @@
         "hidden": "Hidden"
       },
       "fields": {
-        "baseUrlHelper": "Must be a usable Responses API base URL, and the server must support the `/responses` endpoint.",
+        "requestType": "Interface type",
+        "requestTypeHelper": "Choose the request interface supported by your service. Template AI uses this setting after saving.",
+        "baseUrlHelper": "Must be a usable AI API base URL. The server appends `/responses` or `/chat/completions` based on the selected interface type.",
         "replaceApiKey": "Replace API Key (leave blank to keep the saved key)",
         "model": "Model",
         "modelHelperFetched": "Choose from fetched models or enter one manually.",

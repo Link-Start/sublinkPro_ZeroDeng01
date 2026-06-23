@@ -532,9 +532,9 @@ Base: `/api/v1/settings` (write bodies are JSON unless noted; most writes are de
 
 **AI assistant (login-session only — reject API key with 403 by design):**
 - **GET** `/settings/ai-assistant`
-- **POST** `/settings/ai-assistant` (`{baseUrl, model, apiKey, temperature, maxTokens, extraHeaders}`)
+- **POST** `/settings/ai-assistant` (`{baseUrl, model, requestType, apiKey, temperature, maxTokens, extraHeaders}`; `requestType` is `responses` or `chat_completions`)
 - **POST** `/settings/ai-assistant/models`
-- **POST** `/settings/ai-assistant/test`
+- **POST** `/settings/ai-assistant/test` (accepts the same provider fields and uses `requestType` to test `/responses` or streamed `/chat/completions`)
 
 > These four configure the stored AI provider key, so they only work in a logged-in web session. An API-key call always gets 403 here — that's expected, not a bug. Configure the AI assistant once in the web UI; afterwards `/template/ai/*` works with API-key auth.
 

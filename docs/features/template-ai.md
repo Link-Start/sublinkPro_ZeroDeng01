@@ -48,10 +48,12 @@ At minimum, configure:
 - **Model name**
 - **API Key**
 
-Optional **Max Tokens** defaults to `400000`. If you enter `0` on the settings page, the server default is used.
+Choose the **Interface type** that matches your provider:
 
-> [!IMPORTANT]
-> The current AI Assistant **only supports services that provide a `/responses` endpoint**. If a service supports only `/chat/completions` or another compatibility layer, but not `/responses`, it cannot be used for AI template editing or connection tests in this project.
+- **Responses API** calls `/responses`.
+- **Chat Completions API** calls `/chat/completions`.
+
+Optional **Max Tokens** defaults to `400000`. If you enter `0` on the settings page, the server default is used.
 
 > [!TIP]
 > The AI feature in the template editor uses the system level configuration saved in `Settings -> AI Assistant`. Configure it and test the connection first, then return to the template editor to generate drafts.
@@ -67,7 +69,7 @@ Open:
 
 Check that AI is enabled and that Base URL, model name, and API Key are filled correctly.
 
-Also confirm that the AI service behind the Base URL actually supports the `/responses` endpoint. Interfaces that only provide traditional `chat/completions` are currently unavailable.
+Also confirm that the AI service behind the Base URL supports the selected interface type.
 
 ---
 
