@@ -27,9 +27,14 @@ import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
 import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
+import TextField from '@mui/material/TextField';
+import InputAdornment from '@mui/material/InputAdornment';
+import IconButton from '@mui/material/IconButton';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import LocationOnIcon from '@mui/icons-material/LocationOn';
 import TouchAppIcon from '@mui/icons-material/TouchApp';
+import SearchIcon from '@mui/icons-material/Search';
+import ClearIcon from '@mui/icons-material/Clear';
 import useResolvedColorScheme from 'hooks/useResolvedColorScheme';
 import { getReadableTextTokens, getSurfaceTokens } from 'themes/surfaceTokens';
 import { withAlpha } from 'utils/colorUtils';
@@ -96,6 +101,7 @@ export default function AccessLogsDialog({ open, logs, onClose, loading = false,
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [sortField, setSortField] = useState(SORT_FIELDS.date);
   const [sortOrder, setSortOrder] = useState(SORT_ORDERS.desc);
+  const [searchKeyword, setSearchKeyword] = useState('');
   const { isDark } = useResolvedColorScheme();
   const { palette, dialogSurface, dialogSurfaceGradient, mutedPanelSurface, nestedPanelSurface, panelBorder } = getSurfaceTokens(
     theme,
@@ -124,6 +130,18 @@ export default function AccessLogsDialog({ open, logs, onClose, loading = false,
     [t]
   );
 
+  const filteredLogs = useMemo(() => {
+    const keyword = searchKeyword.trim().toLowerCase();
+    if (!keyword) return logs;
+
+    return logs.filter((log) => {
+      const ip = String(log.IP || '').toLowerCase();
+      const region = String(log.Addr || unknownSourceLabel).toLowerCase();
+
+      return ip.includes(keyword) || region.includes(keyword);
+    });
+  }, [logs, searchKeyword, unknownSourceLabel]);
+
   const sortedLogs = useMemo(() => {
     const compareLogs = (leftLog, rightLog) => {
       let comparison = 0;
@@ -143,14 +161,16 @@ export default function AccessLogsDialog({ open, logs, onClose, loading = false,
       return sortOrder === SORT_ORDERS.desc ? comparison * -1 : comparison;
     };
 
-    return logs
+    return filteredLogs
       .map((log, index) => ({ log, index }))
       .sort((left, right) => {
         const comparison = compareLogs(left.log, right.log);
         return comparison === 0 ? left.index - right.index : comparison;
       })
       .map(({ log }) => log);
-  }, [logs, sortField, sortOrder, unknownSourceLabel]);
+  }, [filteredLogs, sortField, sortOrder, unknownSourceLabel]);
+
+  const hasSearchKeyword = searchKeyword.trim().length > 0;
 
   const handleSort = (field) => {
     if (field === sortField) {
@@ -240,6 +260,22 @@ export default function AccessLogsDialog({ open, logs, onClose, loading = false,
     }
   };
 
+  const searchFieldSx = {
+    mb: 1.5,
+    '& .MuiOutlinedInput-root': {
+      bgcolor: sortControlSurface,
+      color: primaryText,
+      borderRadius: 2,
+      '& fieldset': { borderColor: rowBorder },
+      '&:hover fieldset': { borderColor: sortFocusBorder },
+      '&.Mui-focused fieldset': { borderColor: sortFocusBorder }
+    },
+    '& .MuiInputBase-input::placeholder': {
+      color: tertiaryText,
+      opacity: 1
+    }
+  };
+
   const renderSortableHeader = (field, label, sx, align) => (
     <TableCell sx={{ whiteSpace: 'nowrap', ...sx }} align={align} sortDirection={sortField === field ? sortOrder : false}>
       <TableSortLabel
@@ -251,6 +287,61 @@ export default function AccessLogsDialog({ open, logs, onClose, loading = false,
         {label}
       </TableSortLabel>
     </TableCell>
+  );
+
+  const renderSearchField = () => (
+    <TextField
+      fullWidth
+      size="small"
+      value={searchKeyword}
+      onChange={(event) => setSearchKeyword(event.target.value)}
+      placeholder={t('subscriptions.accessLogs.search.placeholder')}
+      sx={searchFieldSx}
+      slotProps={{
+        htmlInput: {
+          'aria-label': t('subscriptions.accessLogs.search.label')
+        },
+        input: {
+          startAdornment: (
+            <InputAdornment position="start">
+              <SearchIcon fontSize="small" sx={{ color: tertiaryText }} />
+            </InputAdornment>
+          ),
+          endAdornment: searchKeyword ? (
+            <InputAdornment position="end">
+              <IconButton
+                size="small"
+                edge="end"
+                onClick={() => setSearchKeyword('')}
+                aria-label={t('subscriptions.accessLogs.search.clear')}
+              >
+                <ClearIcon fontSize="small" />
+              </IconButton>
+            </InputAdornment>
+          ) : null
+        }
+      }}
+    />
+  );
+
+  const FilteredEmptyState = () => (
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        py: 6,
+        borderRadius: 2.5,
+        bgcolor: nestedPanelSurface,
+        border: '1px solid',
+        borderColor: rowBorder,
+        color: secondaryText
+      }}
+    >
+      <SearchIcon sx={{ fontSize: 42, mb: 1.5, opacity: 0.5, color: tertiaryText }} />
+      <Typography sx={{ color: secondaryText }}>{t('subscriptions.accessLogs.search.empty')}</Typography>
+    </Box>
   );
 
   const MobileSortControls = () => (
@@ -483,14 +574,27 @@ export default function AccessLogsDialog({ open, logs, onClose, loading = false,
             {title || t('subscriptions.accessLogs.title')}
           </Typography>
           {!loading && logs.length > 0 && (
-            <Chip size="small" label={t('subscriptions.accessLogs.total', { count: logs.length })} sx={countChipSx} />
+            <Chip
+              size="small"
+              label={
+                hasSearchKeyword
+                  ? t('subscriptions.accessLogs.filteredTotal', { filtered: sortedLogs.length, total: logs.length })
+                  : t('subscriptions.accessLogs.total', { count: logs.length })
+              }
+              sx={countChipSx}
+            />
           )}
         </Stack>
       </DialogTitle>
       <DialogContent
         sx={{
-          p: isMobile ? 1.5 : 2,
-          bgcolor: dialogSurface
+          px: isMobile ? 1.5 : 2,
+          pt: isMobile ? 2 : 2.5,
+          pb: isMobile ? 1.5 : 2,
+          bgcolor: dialogSurface,
+          '&&': {
+            pt: isMobile ? 2 : 2.5
+          }
         }}
       >
         {loading ? (
@@ -516,14 +620,16 @@ export default function AccessLogsDialog({ open, logs, onClose, loading = false,
             <Typography sx={{ color: secondaryText }}>{t('subscriptions.accessLogs.empty')}</Typography>
           </Box>
         ) : isMobile ? (
-          <Box sx={{ mt: 1 }}>
+          <Box>
+            {renderSearchField()}
             <MobileSortControls />
-            {sortedLogs.map((log) => (
-              <MobileLogCard key={log.ID} log={log} />
-            ))}
+            {sortedLogs.length > 0 ? sortedLogs.map((log) => <MobileLogCard key={log.ID} log={log} />) : <FilteredEmptyState />}
           </Box>
         ) : (
-          <DesktopTable />
+          <Box>
+            {renderSearchField()}
+            {sortedLogs.length > 0 ? <DesktopTable /> : <FilteredEmptyState />}
+          </Box>
         )}
       </DialogContent>
       <DialogActions sx={actionsSx}>

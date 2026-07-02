@@ -2189,7 +2189,14 @@
       "lastVisit": "最近访问",
       "count": "{{count}} 次",
       "total": "共 {{count}} 条",
+      "filteredTotal": "{{filtered}} / {{total}} 条",
       "unknownSource": "未知来源",
+      "search": {
+        "label": "搜索访问记录",
+        "placeholder": "搜索 IP 或来源地区",
+        "clear": "清除搜索",
+        "empty": "没有找到匹配的访问记录"
+      },
       "sort": {
         "field": "排序方式",
         "direction": "排序方向",

@@ -2189,7 +2189,14 @@
       "lastVisit": "Last Visit",
       "count": "{{count}} times",
       "total": "{{count}} records",
+      "filteredTotal": "{{filtered}} / {{total}} records",
       "unknownSource": "Unknown source",
+      "search": {
+        "label": "Search access logs",
+        "placeholder": "Search IP or source region",
+        "clear": "Clear search",
+        "empty": "No matching access logs"
+      },
       "sort": {
         "field": "Sort by",
         "direction": "Sort direction",
