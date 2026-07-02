@@ -2190,6 +2190,20 @@
       "count": "{{count}} times",
       "total": "{{count}} records",
       "unknownSource": "Unknown source",
+      "sort": {
+        "field": "Sort by",
+        "direction": "Sort direction",
+        "ascending": "Ascending",
+        "descending": "Descending",
+        "ascShort": "Asc",
+        "descShort": "Desc",
+        "fields": {
+          "ip": "IP address",
+          "region": "Source region",
+          "count": "Visits",
+          "date": "Last visit"
+        }
+      },
       "empty": "No access logs yet"
     },
     "conditions": {

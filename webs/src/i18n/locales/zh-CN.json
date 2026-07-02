@@ -2190,6 +2190,20 @@
       "count": "{{count}} 次",
       "total": "共 {{count}} 条",
       "unknownSource": "未知来源",
+      "sort": {
+        "field": "排序方式",
+        "direction": "排序方向",
+        "ascending": "升序",
+        "descending": "降序",
+        "ascShort": "升序",
+        "descShort": "降序",
+        "fields": {
+          "ip": "IP 地址",
+          "region": "来源地区",
+          "count": "访问次数",
+          "date": "访问时间"
+        }
+      },
       "empty": "暂无访问记录"
     },
     "conditions": {
